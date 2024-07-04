@@ -12,6 +12,8 @@ import numpy as np
 from torch.utils.data import Dataset, ConcatDataset, Subset
 from torch._utils import _accumulate
 import torchvision.transforms as transforms
+import random
+import pandas as pd
 
 
 class Batch_Balanced_Dataset(object):
@@ -26,9 +28,9 @@ class Batch_Balanced_Dataset(object):
         dashed_line = '-' * 80
         print(dashed_line)
         log.write(dashed_line + '\n')
-        print(f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}')
-        log.write(f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}\n')
-        assert len(opt.select_data) == len(opt.batch_ratio)
+        # print(f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}')
+        # log.write(f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}\n')
+        # assert len(opt.select_data) == len(opt.batch_ratio)
 
         _AlignCollate = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
         self.data_loader_list = []
@@ -39,9 +41,9 @@ class Batch_Balanced_Dataset(object):
             _batch_size = max(round(opt.batch_size * float(batch_ratio_d)), 1)
             print(dashed_line)
             log.write(dashed_line + '\n')
-            _dataset, _dataset_log = hierarchical_dataset(root=opt.train_data, opt=opt, select_data=[selected_d])
+            _dataset = OCRDataset(root=opt.train_data, opt=opt)
             total_number_dataset = len(_dataset)
-            log.write(_dataset_log)
+            log.write('')
 
             """
             The total number of data can be modified with opt.total_data_usage_ratio.
@@ -115,7 +117,7 @@ def hierarchical_dataset(root, opt, select_data='/'):
                     break
 
             if select_flag:
-                dataset = LmdbDataset(dirpath, opt)
+                dataset = OCRDataset(dirpath, opt)
                 sub_dataset_log = f'sub-directory:\t/{os.path.relpath(dirpath, root)}\t num samples: {len(dataset)}'
                 print(sub_dataset_log)
                 dataset_log += f'{sub_dataset_log}\n'
@@ -125,6 +127,80 @@ def hierarchical_dataset(root, opt, select_data='/'):
 
     return concatenated_dataset, dataset_log
 
+class OCRDataset(Dataset):
+    def __init__(self, gt_file, opt):
+        self.opt = opt
+        self.data = pd.read_csv(gt_file, header=None, names=['path', 'label'])
+        self.data.dropna(inplace=True)  # Удаляем строки с NaN значениями
+        self.data.reset_index(drop=True, inplace=True)  # Обновляем индексы
+        self.nSamples = len(self.data)
+        print("nSamples1:", self.nSamples)
+        if self.opt.data_filtering_off:
+            self.filtered_index_list = [index for index in range(self.nSamples)]
+        else:
+            self.filtered_index_list = []
+            for index in range(self.nSamples):
+                label = self.data.at[index, 'label']
+                if len(label) > self.opt.batch_max_length:
+                    continue
+                out_of_char = f'[^{self.opt.character}]'
+                if re.search(out_of_char, label.lower()):
+                    continue
+                self.filtered_index_list.append(index)
+            self.nSamples = len(self.filtered_index_list)
+
+        print("nSamples:", self.nSamples)
+        self.current_index = 0
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        index = self.filtered_index_list[index]
+        img_path = self.data.at[index, 'path']
+        label = self.data.at[index, 'label']
+
+        img = self.load_image(img_path)
+
+        if not self.opt.sensitive:
+            label = label.lower()
+
+        out_of_char = f'[^{self.opt.character}]'
+        label = re.sub(out_of_char, '', label)
+
+        return (img, label)
+
+    def load_image(self, img_path):
+        try:
+            if self.opt.rgb:
+                img = Image.open(img_path).convert('RGB')
+            else:
+                img = Image.open(img_path).convert('L')
+        except Exception as e:
+            print(f"Error loading image {img_path}: {e}")
+            random_img_path = random.choice(self.data['path'])
+            img = self.load_image(random_img_path)
+        return img
+
+    def get_batch(self, batch_size):
+        batch_images = []
+        batch_texts = []
+
+        end_index = min(self.current_index + batch_size, self.nSamples)
+        indices = range(self.current_index, end_index)
+
+        for index in indices:
+            img, label = self.__getitem__(index)
+            batch_images.append(img)
+            batch_texts.append(label)
+
+        self.current_index = end_index % self.nSamples  # Loop around if we reach the end
+
+        transform = ResizeNormalize((self.opt.imgW, self.opt.imgH))
+        batch_images = [transform(img) for img in batch_images]
+        batch_images = torch.stack(batch_images, 0)
+
+        return batch_images, batch_texts
 
 class LmdbDataset(Dataset):
 

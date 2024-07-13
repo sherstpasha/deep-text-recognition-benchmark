@@ -3,7 +3,6 @@ import sys
 import re
 import six
 import math
-import lmdb
 import torch
 
 from natsort import natsorted
@@ -15,8 +14,7 @@ import torchvision.transforms as transforms
 import random
 import pandas as pd
 import cv2
-import albumentations as A
-from albumentations.core.transforms_interface import ImageOnlyTransform
+#from albumentations.core.transforms_interface import ImageOnlyTransform
 
 
 class Batch_Balanced_Dataset(object):
@@ -137,75 +135,73 @@ def get_random_odd_int(min_value, max_value):
         value += 1
     return value
 
-# Функция для создания эффекта сепии
-class Sepia(ImageOnlyTransform):
-    def __init__(self, always_apply=False, p=0.5):
-        super(Sepia, self).__init__(always_apply, p)
+# # Функция для создания эффекта сепии
+# class Sepia(ImageOnlyTransform):
+#     def __init__(self, always_apply=False, p=0.5):
+#         super(Sepia, self).__init__(always_apply, p)
 
-    def apply(self, img, **params):
-        img = cv2.transform(img, np.matrix([[0.393, 0.769, 0.189],
-                                            [0.349, 0.686, 0.168],
-                                            [0.272, 0.534, 0.131]]))
-        img = np.clip(img, 0, 255)
-        return img.astype(np.uint8)
+#     def apply(self, img, **params):
+#         img = cv2.transform(img, np.matrix([[0.393, 0.769, 0.189],
+#                                             [0.349, 0.686, 0.168],
+#                                             [0.272, 0.534, 0.131]]))
+#         img = np.clip(img, 0, 255)
+#         return img.astype(np.uint8)
 
-# Функция для создания черно-белого изображения
-class ToGrayScale(ImageOnlyTransform):
-    def __init__(self, always_apply=False, p=0.5):
-        super(ToGrayScale, self).__init__(always_apply, p)
+# # Функция для создания черно-белого изображения
+# class ToGrayScale(ImageOnlyTransform):
+#     def __init__(self, always_apply=False, p=0.5):
+#         super(ToGrayScale, self).__init__(always_apply, p)
 
-    def apply(self, img, **params):
-        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+#     def apply(self, img, **params):
+#         return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-# Функция для добавления случайных кривых черточек
-class RandomLines(ImageOnlyTransform):
-    def __init__(self, num_lines=5, min_length=10, max_length=100, thickness=1, always_apply=False, p=0.5):
-        super(RandomLines, self).__init__(always_apply, p)
-        self.num_lines = num_lines
-        self.min_length = min_length
-        self.max_length = max_length
-        self.thickness = thickness
+# # Функция для добавления случайных кривых черточек
+# class RandomLines(ImageOnlyTransform):
+#     def __init__(self, num_lines=5, min_length=10, max_length=100, thickness=1, always_apply=False, p=0.5):
+#         super(RandomLines, self).__init__(always_apply, p)
+#         self.num_lines = num_lines
+#         self.min_length = min_length
+#         self.max_length = max_length
+#         self.thickness = thickness
 
-    def apply(self, img, **params):
-        img = img.copy()
-        h, w, _ = img.shape
-        for _ in range(self.num_lines):
-            x1, y1 = random.randint(0, w - 1), random.randint(0, h - 1)
-            angle = random.uniform(0, 2 * np.pi)
-            length = random.randint(self.min_length, self.max_length)
-            x2 = int(x1 + length * np.cos(angle))
-            y2 = int(y1 + length * np.sin(angle))
-            color = (0, 0, 0)
-            img = cv2.line(img, (x1, y1), (x2, y2), color, self.thickness)
-        return img
+#     def apply(self, img, **params):
+#         img = img.copy()
+#         h, w, _ = img.shape
+#         for _ in range(self.num_lines):
+#             x1, y1 = random.randint(0, w - 1), random.randint(0, h - 1)
+#             angle = random.uniform(0, 2 * np.pi)
+#             length = random.randint(self.min_length, self.max_length)
+#             x2 = int(x1 + length * np.cos(angle))
+#             y2 = int(y1 + length * np.sin(angle))
+#             color = (0, 0, 0)
+#             img = cv2.line(img, (x1, y1), (x2, y2), color, self.thickness)
+#         return img
 
-# Функция для утолщения текста
-class ThickenText(ImageOnlyTransform):
-    def __init__(self, kernel_size=2, iterations=1, always_apply=False, p=0.5):
-        super(ThickenText, self).__init__(always_apply, p)
-        self.kernel_size = kernel_size
-        self.iterations = iterations
+# # Функция для утолщения текста
+# class ThickenText(ImageOnlyTransform):
+#     def __init__(self, kernel_size=2, iterations=1, always_apply=False, p=0.5):
+#         super(ThickenText, self).__init__(always_apply, p)
+#         self.kernel_size = kernel_size
+#         self.iterations = iterations
 
-    def apply(self, img, **params):
-        kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
-        img = cv2.dilate(img, kernel, iterations=self.iterations)
-        return img
+#     def apply(self, img, **params):
+#         kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
+#         img = cv2.dilate(img, kernel, iterations=self.iterations)
+#         return img
 
-# Функция для утончения текста
-class ThinText(ImageOnlyTransform):
-    def __init__(self, kernel_size=2, iterations=1, always_apply=False, p=0.5):
-        super(ThinText, self).__init__(always_apply, p)
-        self.kernel_size = kernel_size
-        self.iterations = iterations
+# # Функция для утончения текста
+# class ThinText(ImageOnlyTransform):
+#     def __init__(self, kernel_size=2, iterations=1, always_apply=False, p=0.5):
+#         super(ThinText, self).__init__(always_apply, p)
+#         self.kernel_size = kernel_size
+#         self.iterations = iterations
 
-    def apply(self, img, **params):
-        kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
-        img = cv2.erode(img, kernel, iterations=self.iterations)
-        return img
-    
+#     def apply(self, img, **params):
+#         kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
+#         img = cv2.erode(img, kernel, iterations=self.iterations)
+#         return img
 
-
-# OCRDataset class continued
+# OCRDataset class
 class OCRDataset(Dataset):
     def __init__(self, gt_file, opt):
         self.opt = opt
@@ -232,28 +228,28 @@ class OCRDataset(Dataset):
         self.current_index = 0
 
         # Define augmentations
-        self.augmentations = A.Compose([
-            A.Rotate(limit=15, p=0.5),
-            A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.5),
-            A.Perspective(scale=(0.05, 0.1), p=0.3),
-            A.GaussNoise(var_limit=(10.0, 50.0), p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-            A.Blur(blur_limit=3, p=0.3),
-            A.MotionBlur(blur_limit=3, p=0.3),
-            A.RandomRain(drop_length=5, drop_width=1, drop_color=(255, 255, 255), blur_value=2, p=0.3),
-            A.RandomRain(drop_length=10, drop_width=2, drop_color=(0, 0, 0), blur_value=2, p=0.3),
-            A.RandomShadow(p=0.3),
-            A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
-            A.RGBShift(r_shift_limit=20, g_shift_limit=20, b_shift_limit=20, p=0.5),
-            A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, p=0.5),
-            A.InvertImg(p=0.3),
-            A.Solarize(threshold=128, p=0.3),
-            Sepia(p=0.5),
-            ToGrayScale(p=0.5),
-            RandomLines(num_lines=5, min_length=20, max_length=100, thickness=2, p=0.5),
-            ThickenText(kernel_size=2, iterations=2, p=0.5),
-            ThinText(kernel_size=2, iterations=2, p=0.5)
-        ])
+        # self.augmentations = A.Compose([
+        #     A.Rotate(limit=15, p=0.5),
+        #     A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.5),
+        #     A.Perspective(scale=(0.05, 0.1), p=0.3),
+        #     A.GaussNoise(var_limit=(10.0, 50.0), p=0.5),
+        #     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        #     A.Blur(blur_limit=3, p=0.3),
+        #     A.MotionBlur(blur_limit=3, p=0.3),
+        #     A.RandomRain(drop_length=5, drop_width=1, drop_color=(255, 255, 255), blur_value=2, p=0.3),
+        #     A.RandomRain(drop_length=10, drop_width=2, drop_color=(0, 0, 0), blur_value=2, p=0.3),
+        #     A.RandomShadow(p=0.3),
+        #     A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
+        #     A.RGBShift(r_shift_limit=20, g_shift_limit=20, b_shift_limit=20, p=0.5),
+        #     A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, p=0.5),
+        #     A.InvertImg(p=0.3),
+        #     A.Solarize(threshold=128, p=0.3),
+        #     Sepia(p=0.5),
+        #     ToGrayScale(p=0.5),
+        #     RandomLines(num_lines=5, min_length=20, max_length=100, thickness=2, p=0.5),
+        #     ThickenText(kernel_size=2, iterations=2, p=0.5),
+        #     ThinText(kernel_size=2, iterations=2, p=0.5)
+        # ])
 
     def __len__(self):
         return self.nSamples
@@ -272,8 +268,8 @@ class OCRDataset(Dataset):
         label = re.sub(out_of_char, '', label)
 
         img = np.array(img)
-        augmented = self.augmentations(image=img)
-        img = augmented['image']
+        #augmented = self.augmentations(image=img)
+        #img = augmented['image']
 
         return (img, label)
 
@@ -305,6 +301,86 @@ class OCRDataset(Dataset):
 
         transform = ResizeNormalize((self.opt.imgW, self.opt.imgH))
         batch_images = [transform(img) for img in batch_images]
+        batch_images = torch.stack(batch_images, 0)
+
+        return batch_images, batch_texts
+
+class OCRDataset2(Dataset):
+    def __init__(self, csv_file, root_dir, opt):
+        self.opt = opt
+        self.root_dir = root_dir
+        self.annotations = pd.read_csv(csv_file, sep='^([^,]+),', engine='python', usecols=['filename', 'words'], keep_default_na=False)
+        
+        # Filter out rows where files do not exist
+        self.annotations['exists'] = self.annotations['filename'].apply(lambda x: os.path.exists(os.path.join(root_dir, x)))
+        self.annotations = self.annotations[self.annotations['exists']].drop(columns=['exists'])
+
+        self.nSamples = len(self.annotations)
+        print("nSamples1:", self.nSamples)
+
+        if self.opt.data_filtering_off:
+            self.filtered_index_list = [index for index in range(self.nSamples)]
+        else:
+            self.filtered_index_list = []
+            for index in range(self.nSamples):
+                label = self.annotations.iloc[index, 1]
+                if len(label) > self.opt.batch_max_length:
+                    continue
+                out_of_char = f'[^{self.opt.character}]'
+                if re.search(out_of_char, label.lower()):
+                    continue
+                self.filtered_index_list.append(index)
+            self.nSamples = len(self.filtered_index_list)
+
+        print("nSamples:", self.nSamples)
+        self.current_index = 0
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        index = self.filtered_index_list[index]
+        img_name = os.path.join(self.root_dir, self.annotations.iloc[index, 0])
+        image = self.load_image(img_name)
+        label = self.annotations.iloc[index, 1]
+
+        if not self.opt.sensitive:
+            label = label.lower()
+
+        out_of_char = f'[^{self.opt.character}]'
+        label = re.sub(out_of_char, '', label)
+
+        # Convert the image to a tensor
+        img = np.array(image)
+
+        return (image, label)
+
+    def load_image(self, img_path):
+        try:
+            if self.opt.rgb:
+                img = Image.open(img_path).convert('RGB')
+            else:
+                img = Image.open(img_path).convert('L')
+        except Exception as e:
+            print(f"Error loading image {img_path}: {e}")
+            random_img_path = os.path.join(self.root_dir, random.choice(self.annotations['filename']))
+            img = self.load_image(random_img_path)
+        return img
+
+    def get_batch(self, batch_size):
+        batch_images = []
+        batch_texts = []
+
+        end_index = min(self.current_index + batch_size, self.nSamples)
+        indices = range(self.current_index, end_index)
+
+        for index in indices:
+            img, label = self.__getitem__(index)
+            batch_images.append(img)
+            batch_texts.append(label)
+
+        self.current_index = end_index % self.nSamples  # Loop around if we reach the end
+
         batch_images = torch.stack(batch_images, 0)
 
         return batch_images, batch_texts

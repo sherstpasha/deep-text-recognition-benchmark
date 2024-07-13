@@ -150,7 +150,7 @@ def recognize_text_from_images(image_pieces, model_dict):
 
 def extract_text_from_image(image_or_path, recognize_model):
 
-    gpu = device == "cuda"
+    gpu = torch.cuda.is_available()
 
     # Проверяем, является ли входное изображение путем или numpy.ndarray
     if isinstance(image_or_path, str):

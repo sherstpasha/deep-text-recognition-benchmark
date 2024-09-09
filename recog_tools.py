@@ -165,6 +165,7 @@ def extract_text_from_image(image_or_path, recognize_model):
         )
 
     final_boxes = detect_image_craft(image, gpu=gpu)
+    print(final_boxes)
     line_boxes = merge_boxes_by_lines(final_boxes)
 
     cropped_images_grouped = crop_boxes(np.array(image), final_boxes)

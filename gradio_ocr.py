@@ -1,5 +1,5 @@
 import gradio as gr
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 import requests
 from recog_tools import load_model, extract_text_from_image
 import numpy as np
@@ -42,35 +42,46 @@ def save_drawing(image, save_dir=SAVE_DIR, prefix="drawing"):
     return filename
 
 
-# Функция обработки рисунка с холста
-def process_drawing(drawing):
-    # Извлечение составного изображения (composite) из словаря drawing
-    drawing_array = np.array(drawing["composite"], dtype=np.uint8)
+# Исправленная функция рисования боксов поверх текста
+def draw_boxes_on_image(image, boxes):
+    image_copy = image.copy()  # Создаем копию изображения
+    draw = ImageDraw.Draw(image_copy)
 
-    # Преобразование рисунка в изображение PIL
+    for polygon in boxes:
+        for polygon_i in polygon:
+            polygon_coords = [(int(x), int(y)) for x, y in polygon_i]
+            draw.polygon(polygon_coords, outline="red", width=3)
+
+    return image_copy  # Возвращаем копию изображения с нарисованными боксами
+
+
+# Функция обработки рисунка с холста
+def process_drawing(drawing, gallery_images):
+    if gallery_images is None:
+        gallery_images = []  # Инициализация пустого списка, если это первое использование
+
+    # Извлечение изображения с холста
+    drawing_array = np.array(drawing["composite"], dtype=np.uint8)
     image = Image.fromarray(drawing_array)
 
     # Преобразование в RGB, если изображение имеет альфа-канал (RGBA)
     if image.mode == "RGBA":
-        # Создание белого фона и наложение рисунка
         white_background = Image.new("RGB", image.size, (255, 255, 255))
-        white_background.paste(
-            image, mask=image.split()[3]
-        )  # Используем альфа-канал как маску
+        white_background.paste(image, mask=image.split()[3])
         image = white_background
 
-    # Сохранение оригинального изображения для отладки
-    saved_image_path = save_drawing(image, prefix="original")
+    # Сохранение оригинального изображения
+    saved_image_path = save_drawing(image, prefix="submitted")
 
-    # Преобразуем изображение в массив numpy
+    # Преобразуем изображение в массив для распознавания
     image_array = np.array(image)
-
-    # Извлечение текста из изображения с обработкой возможных ошибок
     try:
-        results = extract_text_from_image(image_array, model_dict)
+        # Здесь модель распознает текст на оригинальном изображении
+        results, final_boxes, _ = extract_text_from_image(image_array, model_dict)
+        
 
         if not results:
-            return "Текст не найден."
+            return "Текст не найден.", gallery_images, gr.update(visible=False)
 
         # Объединение распознанного текста
         recognized_text = " ".join([text for _, text in results])
@@ -78,14 +89,24 @@ def process_drawing(drawing):
         # Коррекция текста с помощью Яндекс Спеллера
         corrected_text = correct_text(recognized_text)
 
-        return corrected_text
+        # Если есть боксы, рисуем их на изображении
+        if final_boxes is not None:
+            image_with_boxes = draw_boxes_on_image(image, final_boxes)
+            # Сохранение изображения с боксами для галереи
+            saved_image_with_boxes_path = save_drawing(image_with_boxes, prefix="with_boxes")
+
+            # Добавляем новое изображение в галерею
+            gallery_images.append((saved_image_with_boxes_path, corrected_text))
+            return corrected_text, gallery_images, gr.update(visible=True)
+
+        return corrected_text, gallery_images, gr.update(visible=True)
     except ValueError as e:
-        return "Текст не найден."
+        return "Текст не найден.", gallery_images, gr.update(visible=False)
 
 
 # Функция для очистки холста
 def clear_drawing():
-    return None
+    return None, [], gr.update(visible=False)
 
 
 # Gradio интерфейс
@@ -95,21 +116,25 @@ with gr.Blocks() as demo:
         label="Результат распознавания", interactive=False, elem_id="result-box"
     )
 
-    # Кнопки для действий
-    with gr.Row():
-        clear_button = gr.Button("Очистить")
-        recognize_button = gr.Button("Распознать")
-
     # Холст для рисования
     canvas = gr.Sketchpad(
-        label="Нарисуйте текст", width=1920, height=1080
-    )  # Увеличенный холст для полноэкранного режима
+        label="Нарисуйте текст", width=1920, height=640, canvas_size=(1920, 780)
+    )
+
+    # Кнопки для действий
+    with gr.Row():
+        recognize_button = gr.Button("Распознать")
+        clear_button = gr.Button("Очистить")
+
+    # Галерея для отображения последних распознанных изображений, по умолчанию скрыта
+    gallery = gr.Gallery(label="Последние распознанные изображения", columns=4, height="auto", visible=False)
 
     # Логика кнопок
-    clear_button.click(fn=clear_drawing, outputs=canvas)  # Очистка холста
     recognize_button.click(
-        fn=process_drawing, inputs=canvas, outputs=recognized_text
-    )  # Распознавание текста
+        fn=process_drawing, inputs=[canvas, gallery], outputs=[recognized_text, gallery, gallery]
+    )  # Распознавание текста и обновление галереи
+
+    clear_button.click(fn=clear_drawing, outputs=[canvas, gallery, gallery])  # Очистка холста и галереи
 
 # Запуск интерфейса
 demo.launch(share=True)

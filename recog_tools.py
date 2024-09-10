@@ -33,6 +33,10 @@ def detect_image_craft(image, gpu=False):
     # Определение текста с ограничивающими рамками
     h_boxes, f_boxes = reader.detect(
         image,
+        # text_threshold = 0.4,
+        # low_text = 0.2,
+        add_margin = 0.3,
+        min_size=5,
     )
 
     h_boxes = h_boxes[0]
@@ -143,6 +147,7 @@ def recognize_text_from_images(image_pieces, model_dict):
             model_dict["opt"],
             image,
         )
+        print(text, "text")
         recognized_texts.append(clean_recognized_text(text[0]))
 
     return recognized_texts
@@ -165,15 +170,20 @@ def extract_text_from_image(image_or_path, recognize_model):
         )
 
     final_boxes = detect_image_craft(image, gpu=gpu)
-    print(final_boxes)
+
     line_boxes = merge_boxes_by_lines(final_boxes)
 
     cropped_images_grouped = crop_boxes(np.array(image), final_boxes)
 
-    recognized_text = [
-        " ".join(recognize_text_from_images(image_piece, recognize_model))
-        for image_piece in cropped_images_grouped
-    ]
+    recognized_text = []
+    recognized_text_list = []
+    for image_piece in cropped_images_grouped:
+        test_i = recognize_text_from_images(image_piece, recognize_model)
+        recognized_text.append(" ".join(test_i))
+        recognized_text_list.append(test_i)
+
+    print(recognized_text_list)
+
 
     # Формируем результат в формате [([x1, y1, x2, y2], "string"), ...]
     results = [
@@ -181,4 +191,4 @@ def extract_text_from_image(image_or_path, recognize_model):
         for box, text in zip(line_boxes, recognized_text)
     ]
 
-    return results
+    return results, final_boxes, recognized_text_list[0]

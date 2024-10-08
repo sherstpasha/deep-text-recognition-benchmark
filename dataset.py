@@ -227,30 +227,6 @@ class OCRDataset(Dataset):
         print("nSamples:", self.nSamples)
         self.current_index = 0
 
-        # Define augmentations
-        # self.augmentations = A.Compose([
-        #     A.Rotate(limit=15, p=0.5),
-        #     A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.5),
-        #     A.Perspective(scale=(0.05, 0.1), p=0.3),
-        #     A.GaussNoise(var_limit=(10.0, 50.0), p=0.5),
-        #     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        #     A.Blur(blur_limit=3, p=0.3),
-        #     A.MotionBlur(blur_limit=3, p=0.3),
-        #     A.RandomRain(drop_length=5, drop_width=1, drop_color=(255, 255, 255), blur_value=2, p=0.3),
-        #     A.RandomRain(drop_length=10, drop_width=2, drop_color=(0, 0, 0), blur_value=2, p=0.3),
-        #     A.RandomShadow(p=0.3),
-        #     A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
-        #     A.RGBShift(r_shift_limit=20, g_shift_limit=20, b_shift_limit=20, p=0.5),
-        #     A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, p=0.5),
-        #     A.InvertImg(p=0.3),
-        #     A.Solarize(threshold=128, p=0.3),
-        #     Sepia(p=0.5),
-        #     ToGrayScale(p=0.5),
-        #     RandomLines(num_lines=5, min_length=20, max_length=100, thickness=2, p=0.5),
-        #     ThickenText(kernel_size=2, iterations=2, p=0.5),
-        #     ThinText(kernel_size=2, iterations=2, p=0.5)
-        # ])
-
     def __len__(self):
         return self.nSamples
 
@@ -266,10 +242,6 @@ class OCRDataset(Dataset):
 
         out_of_char = f'[^{self.opt.character}]'
         label = re.sub(out_of_char, '', label)
-
-        img = np.array(img)
-        #augmented = self.augmentations(image=img)
-        #img = augmented['image']
 
         return (img, label)
 

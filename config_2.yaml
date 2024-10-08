@@ -29,7 +29,7 @@ data_filtering_off: false
 Transformation: None
 FeatureExtraction: VGG
 SequenceModeling: BiLSTM
-Prediction: CTC
+Prediction: Attn
 num_fiducial: 20
 input_channel: 1
 output_channel: 128

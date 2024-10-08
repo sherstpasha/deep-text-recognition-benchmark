@@ -1,8 +1,8 @@
 import re
 
 # Указываем путь к исходному файлу и путь к файлу с отфильтрованными результатами
-input_file = r"C:\Users\user\Desktop\megacorpus\gt_test.txt"
-output_file = r"C:\Users\user\Desktop\megacorpus\different_gt\reports_gt_test.txt"
+input_file = r"C:\Users\user\Desktop\megacorpus\gt_all.txt"
+output_file = r"C:\Users\user\Desktop\megacorpus\different_gt\gt_reports.txt"
 
 # Указываем папки, которые нужно оставить
 include_folders = ["reports"]
@@ -12,6 +12,7 @@ pattern = re.compile(r"\\([^\\]+)\\")  # Извлечение имен папо�
 
 # Указываем исходный и новый корневой путь, который нужно заменить
 old_root_path = r"C:\Users\user\Desktop\megacorpus"
+# new_root_path = r"C:\Users\user\Desktop\megacorpus"
 new_root_path = "mounted_folder"
 
 # Считываем исходный файл

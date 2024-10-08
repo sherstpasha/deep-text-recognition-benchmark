@@ -28,7 +28,7 @@ PAD: false
 data_filtering_off: false
 Transformation: None
 FeatureExtraction: VGG
-SequenceModeling: BiLSTM
+SequenceModeling: ResNet
 Prediction: CTC
 num_fiducial: 20
 input_channel: 1

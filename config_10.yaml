@@ -3,7 +3,7 @@ valid_data: "C:/Users/user/Desktop/megacorpus/reports/gt_reports_test.txt"
 exp_name: C:/Users/user/Desktop/megacorpus/exp1
 manualSeed: 1111
 workers: 8
-batch_size: 256
+batch_size: 64
 num_iter: 200000
 valInterval: 10000
 saved_model: ''
@@ -27,10 +27,10 @@ sensitive: true
 PAD: false
 data_filtering_off: false
 Transformation: None
-FeatureExtraction: VGG
-SequenceModeling: ResNet
+FeatureExtraction: ResNet
+SequenceModeling: BiLSTM
 Prediction: Attn
 num_fiducial: 20
 input_channel: 1
-output_channel: 128
-hidden_size: 128
+output_channel: 256
+hidden_size: 256

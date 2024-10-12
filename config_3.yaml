@@ -4,7 +4,7 @@ exp_name: C:/Users/user/Desktop/megacorpus/exp1
 manualSeed: 1111
 workers: 8
 batch_size: 256
-num_iter: 100000
+num_iter: 200000
 valInterval: 10000
 saved_model: ''
 FT: false

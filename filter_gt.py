@@ -1,8 +1,8 @@
 import re
 
 # Указываем путь к исходному файлу и путь к файлу с отфильтрованными результатами
-input_file = r"C:\Users\user\Desktop\megacorpus\gt_all.txt"
-output_file = r"C:\Users\user\Desktop\megacorpus\different_gt\gt_reports.txt"
+input_file = r"C:\Users\user\Desktop\megacorpus\reports\gt_reports_training.txt"
+output_file = r"C:\Users\user\Desktop\megacorpus\reports\gt_reports_training_docker.txt"
 
 # Указываем папки, которые нужно оставить
 include_folders = ["reports"]

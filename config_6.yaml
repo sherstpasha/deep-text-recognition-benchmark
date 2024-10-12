@@ -3,7 +3,7 @@ valid_data: "C:/Users/user/Desktop/megacorpus/reports/gt_reports_test.txt"
 exp_name: C:/Users/user/Desktop/megacorpus/exp1
 manualSeed: 1111
 workers: 8
-batch_size: 256
+batch_size: 128
 num_iter: 200000
 valInterval: 10000
 saved_model: ''
@@ -19,8 +19,8 @@ select_data: MJ-ST
 batch_ratio: '1'
 total_data_usage_ratio: 1.0
 batch_max_length: 24
-imgH: 70
-imgW: 150
+imgH: 100
+imgW: 330
 rgb: false
 character: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя!\"#$%&'()*+,-./:;<=>?@[\\]№_`{|}~ €₽"
 sensitive: true
@@ -28,7 +28,7 @@ PAD: false
 data_filtering_off: false
 Transformation: None
 FeatureExtraction: VGG
-SequenceModeling: ResNet
+SequenceModeling: BiLSTM
 Prediction: Attn
 num_fiducial: 20
 input_channel: 1

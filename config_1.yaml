@@ -1,6 +1,6 @@
-train_data: C:/Users/user/Desktop/megacorpus/reports/gt_reports_training.txt
-valid_data: "C:/Users/user/Desktop/megacorpus/reports/gt_reports_test.txt"
-exp_name: C:/Users/user/Desktop/megacorpus/exp1
+train_data: C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_training_full_path.txt
+valid_data: "C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_test_full_path.txt"
+save_path: "C:/Users/user/Desktop/results2610/config_1"
 manualSeed: 1111
 workers: 8
 batch_size: 64

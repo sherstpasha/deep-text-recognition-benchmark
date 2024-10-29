@@ -9,7 +9,7 @@ def split_data(file_path):
     random.shuffle(lines)
 
     # Разделение данных на тренировочную и тестовую части
-    split_index = int(len(lines) * 0.77)
+    split_index = int(len(lines) * 0.8)
     training_data = lines[:split_index]
     test_data = lines[split_index:]
 
@@ -27,4 +27,4 @@ def split_data(file_path):
     print(f"Тестовые данные сохранены в файл: {test_file_path}")
 
 # Пример вызова функции:
-split_data(r"C:\Users\user\Desktop\megacorpus\reports\gt_reports.txt")
+split_data(r"C:\Users\user\Desktop\megacorpus\reports_u\gt_reports_u.txt")

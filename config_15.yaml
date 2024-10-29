@@ -1,6 +1,6 @@
 train_data: C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_training_full_path.txt
 valid_data: "C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_test_full_path.txt"
-save_path: "C:/Users/user/Desktop/results2610/config_3"
+save_path: "C:/Users/user/Desktop/results2610/config_15"
 manualSeed: 1111
 workers: 8
 batch_size: 64
@@ -19,18 +19,18 @@ select_data: MJ-ST
 batch_ratio: '1'
 total_data_usage_ratio: 1.0
 batch_max_length: 24
-imgH: 70
-imgW: 150
+imgH: 100
+imgW: 330
 rgb: false
 character: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя!\"#$%&'()*+,-./:;<=>?@[\\]№_`{|}~ €₽"
 sensitive: true
 PAD: false
 data_filtering_off: false
 Transformation: None
-FeatureExtraction: VGG
-SequenceModeling: ResNet
+FeatureExtraction: ResNet
+SequenceModeling: BiLSTM
 Prediction: CTC
 num_fiducial: 20
 input_channel: 1
-output_channel: 128
-hidden_size: 128
+output_channel: 256
+hidden_size: 256

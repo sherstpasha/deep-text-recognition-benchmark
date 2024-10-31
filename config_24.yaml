@@ -1,6 +1,6 @@
 train_data: C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_training_full_path.txt
 valid_data: "C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_test_full_path.txt"
-save_path: "C:/Users/user/Desktop/results2610/config_16"
+save_path: "C:/Users/user/Desktop/results2610/config_24"
 manualSeed: 1111
 workers: 8
 batch_size: 64
@@ -29,8 +29,8 @@ data_filtering_off: false
 Transformation: None
 FeatureExtraction: ResNet
 SequenceModeling: BiLSTM
-Prediction: CTC
+Prediction: Attn
 num_fiducial: 20
 input_channel: 1
-output_channel: 256
-hidden_size: 256
+output_channel: 512
+hidden_size: 512

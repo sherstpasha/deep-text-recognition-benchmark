@@ -28,35 +28,19 @@ print("Квартильные значения для высоты:", height_qua
 print("Квартильные значения для ширины:", width_quartiles)
 
 # Построение ящиков с усами для высоты и ширины
-plt.figure(figsize=(8, 10))  # Устанавливаем вертикальную фигуру
-plt.style.use('seaborn-whitegrid')  # Устанавливаем стиль
-
-# Определение цветов для боксплотов
-colors = ['#3498db', '#e74c3c']
+plt.figure(figsize=(10, 5))
 
 # Ящик с усами для высоты
-plt.subplot(2, 1, 1)
-plt.boxplot(heights, vert=True, patch_artist=True, widths=0.5,
-            boxprops=dict(facecolor=colors[0], color=colors[0]),
-            whiskerprops=dict(color=colors[0]),
-            capprops=dict(color=colors[0]),
-            medianprops=dict(color='black'),
-            flierprops=dict(markerfacecolor=colors[0], marker='o', markersize=5))
-plt.title("Boxplot высоты изображений", fontsize=14, fontweight='bold')
+plt.subplot(1, 2, 1)
+plt.boxplot(heights, vert=True, patch_artist=True)
+plt.title("Квартильное распределение высоты изображений")
 plt.ylabel("Высота (пиксели)")
-plt.xticks([1], ['Высота'])  # Устанавливаем название на оси x
 
 # Ящик с усами для ширины
-plt.subplot(2, 1, 2)
-plt.boxplot(widths, vert=True, patch_artist=True, widths=0.5,
-            boxprops=dict(facecolor=colors[1], color=colors[1]),
-            whiskerprops=dict(color=colors[1]),
-            capprops=dict(color=colors[1]),
-            medianprops=dict(color='black'),
-            flierprops=dict(markerfacecolor=colors[1], marker='o', markersize=5))
-plt.title("Boxplot ширины изображений", fontsize=14, fontweight='bold')
+plt.subplot(1, 2, 2)
+plt.boxplot(widths, vert=True, patch_artist=True)
+plt.title("Квартильное распределение ширины изображений")
 plt.ylabel("Ширина (пиксели)")
-plt.xticks([1], ['Ширина'])  # Устанавливаем название на оси x
 
 plt.tight_layout()
 plt.show()

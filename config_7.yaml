@@ -1,11 +1,12 @@
 train_data: C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_training_full_path.txt
 valid_data: "C:/Users/user/Desktop/megacorpus/reports_u/gt_reports_u_test_full_path.txt"
-save_path: "C:/Users/user/Desktop/results2610/config_7"
+save_path: "C:/Users/user/Desktop/results111/config_7"
 manualSeed: 1111
 workers: 8
 batch_size: 64
-num_iter: 200000
-valInterval: 10000
+num_iter: 300000
+valInterval: 5000
+no_improve: 10
 saved_model: ''
 FT: false
 adam: false

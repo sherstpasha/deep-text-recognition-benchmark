@@ -5,7 +5,7 @@ import time
 max_parallel_processes = 1  # Максимальное количество параллельных процессов
 processes = []  # Список для хранения запущенных процессов
 
-for i in range(15, 17):
+for i in range(1, 9):
     config_file = f'config_{i}.yaml'
     if not os.path.exists(config_file):
         print(f"Файл конфигурации {config_file} не найден. Пропускаем.")

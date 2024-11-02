@@ -4,7 +4,7 @@ save_path: "C:/Users/user/Desktop/results2610/config_17"
 manualSeed: 1111
 workers: 8
 batch_size: 64
-num_iter: 200000
+num_iter: 400000
 valInterval: 10000
 saved_model: ''
 FT: false

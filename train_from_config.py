@@ -141,97 +141,106 @@ def train(opt):
     start_time = time.time()
     best_accuracy = -1
     best_norm_ED = -1
+    best_valid_loss = float('inf')
+    no_improve_counter = 0  # Счетчик валидаций без улучшения
     iteration = start_iter
 
     pbar = tqdm(total=opt.valInterval, desc='Training Progress', leave=False)
 
-    for epoch in range(opt.num_iter):
-        for image_tensors, labels in train_loader:
-            # Часть обучения
-            image = image_tensors.to(device)
-            text, length = converter.encode(labels, batch_max_length=opt.batch_max_length)
-            batch_size = image.size(0)
+    while True:
+        try:
+            image_tensors, labels = next(train_iter)
+        except:
+            train_iter = iter(train_loader)
+            image_tensors, labels = next(train_iter)
 
-            if 'CTC' in opt.Prediction:
-                preds = model(image, text)
-                preds_size = torch.IntTensor([preds.size(1)] * batch_size)
-                if opt.baiduCTC:
-                    preds = preds.permute(1, 0, 2)  # для формата CTCLoss
-                    cost = criterion(preds, text, preds_size, length) / batch_size
-                else:
-                    preds = preds.log_softmax(2).permute(1, 0, 2)
-                    cost = criterion(preds, text, preds_size, length)
+        # Часть обучения
+        image = image_tensors.to(device)
+        text, length = converter.encode(labels, batch_max_length=opt.batch_max_length)
+        batch_size = image.size(0)
 
+        if 'CTC' in opt.Prediction:
+            preds = model(image, text)
+            preds_size = torch.IntTensor([preds.size(1)] * batch_size)
+            if opt.baiduCTC:
+                preds = preds.permute(1, 0, 2)  # для формата CTCLoss
+                cost = criterion(preds, text, preds_size, length) / batch_size
             else:
-                preds = model(image, text[:, :-1])  # align with Attention.forward
-                target = text[:, 1:]  # без символа [GO]
-                cost = criterion(preds.view(-1, preds.shape[-1]), target.contiguous().view(-1))
+                preds = preds.log_softmax(2).permute(1, 0, 2)
+                cost = criterion(preds, text, preds_size, length)
 
-            model.zero_grad()
-            cost.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)  # обрезка градиента (Default: 5)
-            optimizer.step()
+        else:
+            preds = model(image, text[:, :-1])  # align with Attention.forward
+            target = text[:, 1:]  # без символа [GO]
+            cost = criterion(preds.view(-1, preds.shape[-1]), target.contiguous().view(-1))
 
-            loss_avg.add(cost)
+        model.zero_grad()
+        cost.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)  # обрезка градиента (Default: 5)
+        optimizer.step()
 
-            pbar.update(1)
+        loss_avg.add(cost)
 
-            # Часть валидации
-            if (iteration + 1) % opt.valInterval == 0 or iteration == 0:
-                pbar.close()
-                elapsed_time = time.time() - start_time
-                # Логирование
-                with open(f'{opt.save_path}/{opt.exp_name}/log_train.txt', 'a') as log:
-                    model.eval()
-                    with torch.no_grad():
-                        valid_loss, current_accuracy, current_norm_ED, preds, confidence_score, labels, infer_time, length_of_data = validation(
-                            model, criterion, valid_loader, converter, opt)
-                    model.train()
+        pbar.update(1)
+        iteration += 1
 
-                    # Потери на обучении и валидации
-                    loss_log = f'[{iteration+1}/{opt.num_iter}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
-                    loss_avg.reset()
+        # Часть валидации
+        if (iteration) % opt.valInterval == 0 or iteration == 0:
+            pbar.close()
+            elapsed_time = time.time() - start_time
+            # Логирование
+            with open(f'{opt.save_path}/{opt.exp_name}/log_train.txt', 'a') as log:
+                model.eval()
+                with torch.no_grad():
+                    valid_loss, current_accuracy, current_norm_ED, preds, confidence_score, labels, infer_time, length_of_data = validation(
+                        model, criterion, valid_loader, converter, opt)
+                model.train()
 
-                    current_model_log = f'{"Current_accuracy":17s}: {current_accuracy:0.3f}, {"Current_norm_ED":17s}: {current_norm_ED:0.2f}'
+                # Потери на обучении и валидации
+                loss_log = f'[{iteration}/{opt.num_iter}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
+                loss_avg.reset()
 
-                    # Сохранение модели с лучшей точностью
-                    if current_accuracy > best_accuracy:
-                        best_accuracy = current_accuracy
-                        torch.save(model.state_dict(), f'{opt.save_path}/{opt.exp_name}/best_accuracy.pth')
-                    if current_norm_ED > best_norm_ED:
-                        best_norm_ED = current_norm_ED
-                        torch.save(model.state_dict(), f'{opt.save_path}/{opt.exp_name}/best_norm_ED.pth')
-                    best_model_log = f'{"Best_accuracy":17s}: {best_accuracy:0.3f}, {"Best_norm_ED":17s}: {best_norm_ED:0.2f}'
+                current_model_log = f'{"Current_accuracy":17s}: {current_accuracy:0.3f}, {"Current_norm_ED":17s}: {current_norm_ED:0.2f}'
 
-                    loss_model_log = f'{loss_log}\n{current_model_log}\n{best_model_log}'
-                    print(loss_model_log)
-                    log.write(loss_model_log + '\n')
+                # Сохранение модели с лучшей точностью
+                improved = False
+                if current_accuracy > best_accuracy:
+                    best_accuracy = current_accuracy
+                    torch.save(model.state_dict(), f'{opt.save_path}/{opt.exp_name}/best_accuracy.pth')
+                    no_improve_counter = 0  # Сброс счетчика
+                    improved = True
+                elif valid_loss < best_valid_loss:
+                    best_valid_loss = valid_loss
+                    torch.save(model.state_dict(), f'{opt.save_path}/{opt.exp_name}/best_valid_loss.pth')
+                    no_improve_counter = 0  # Сброс счетчика
+                    improved = True
+                else:
+                    no_improve_counter += 1  # Увеличение счетчика
 
-                    # Показ некоторых предсказанных результатов
-                    # dashed_line = '-' * 80
-                    # head = f'{"Ground Truth":25s} | {"Prediction":25s} | Confidence Score & T/F'
-                    # predicted_result_log = f'{dashed_line}\n{head}\n{dashed_line}\n'
-                    # for gt, pred, confidence in zip(labels[:10], preds[:10], confidence_score[:10]):
-                    #     if 'Attn' in opt.Prediction:
-                    #         gt = gt[:gt.find('[s]')]
-                    #         pred = pred[:pred.find('[s]')]
+                best_model_log = f'{"Best_accuracy":17s}: {best_accuracy:0.3f}, {"Best_valid_loss":17s}: {best_valid_loss:0.5f}'
 
-                    #     predicted_result_log += f'{gt:25s} | {pred:25s} | {confidence:0.4f}\t{str(pred == gt)}\n'
-                    # predicted_result_log += f'{dashed_line}'
-                    # print(predicted_result_log)
-                    # log.write(predicted_result_log + '\n')
+                loss_model_log = f'{loss_log}\n{current_model_log}\n{best_model_log}'
+                print(loss_model_log)
+                log.write(loss_model_log + '\n')
 
-                pbar = tqdm(total=opt.valInterval, desc='Training Progress', leave=False)
+                # Проверка для ранней остановки
+                if no_improve_counter >= opt.no_improve:
+                    print(f'No improvement in {opt.no_improve} validation checks, stopping training.')
+                    torch.save(model.state_dict(), f'{opt.save_path}/{opt.exp_name}/last.pth')
+                    sys.exit()
 
-            # Сохранение модели каждые 1e+5 итераций
-            if (iteration + 1) % 1e+5 == 0:
-                torch.save(
-                    model.state_dict(), f'{opt.save_path}/{opt.exp_name}/iter_{iteration+1}.pth')
+            pbar = tqdm(total=opt.valInterval, desc='Training Progress', leave=False)
 
-            if (iteration + 1) == opt.num_iter:
-                print('end the training')
-                sys.exit()
-            iteration += 1
+        # Сохранение модели каждые 1e+5 итераций
+        if (iteration) % 1e+5 == 0:
+            torch.save(
+                model.state_dict(), f'{opt.save_path}/{opt.exp_name}/iter_{iteration}.pth')
+
+        if iteration >= opt.num_iter:
+            print('End of training')
+            torch.save(model.state_dict(), f'{opt.save_path}/{opt.exp_name}/last.pth')
+            sys.exit()
+
 
 def convert_types(opt):
     opt.manualSeed = int(opt.manualSeed)
@@ -251,6 +260,7 @@ def convert_types(opt):
     opt.input_channel = int(opt.input_channel)
     opt.output_channel = int(opt.output_channel)
     opt.hidden_size = int(opt.hidden_size)
+    opt.no_improve = int(opt.no_improve)
     return opt
 
 if __name__ == '__main__':
@@ -280,6 +290,5 @@ if __name__ == '__main__':
         opt.workers *= opt.num_gpu
         opt.batch_size *= opt.num_gpu
 
-    print(type(opt.eps))
     opt = convert_types(opt)
     train(opt)

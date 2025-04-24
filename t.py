@@ -1,27 +1,26 @@
-from hardocr import OCRBoxProcessor
+from PIL import Image
+from hardocr import DocumentOCRPipeline
+import torch
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-image_path = r"C:\shared\Archive_19_04\combined_images\4.jpg"
-ocr_model_path = r"C:\shared\saved_models_23_04\TPS-ResNet-LSTM-Attn-Seed1111\best_accuracy.pth"
+config_path = "config.yaml"
+image_path = r"C:\data_east\images\1105.jpg"
+ocr_model_path = r"C:\Users\pasha\OneDrive\Рабочий стол\best_accuracy.pth"
 
-model = OCRBoxProcessor(config_path="config.yaml",
-                        ocr_model_path=ocr_model_path)
+# Инициализируем наш процессор
+pipeline = DocumentOCRPipeline(
+    config_path=config_path,
+    ocr_model_path=ocr_model_path,
+    device=device,
+)
 
-res = model(image_path)
+# Загружаем изображение через PIL
+pil_img = Image.open(image_path)
+
+# Распознаем изображение
+res = pipeline(pil_img)
 
 print(res)
-'''
-# загрузка модели. Словарь с ключами model, converter, opt
-model = load_model(
-    config_path="config.yaml",  # файл с конфигурацией (не нужно менять)
-    model_path=ocr_model_path,  # путь до весов
-)
 
-# результат распознавания в формате [([x1, y1, x2, y2], "string"), ...]
-text_results = extract_text_from_image(
-    image_or_path=image_path,  # Путь к изображению или изображение
-    recognize_model=model,  # Путь к модели
-)
-
-# Печатаем результаты распознавания текста
-print(text_results)'''
+print(res.to_plain_text())

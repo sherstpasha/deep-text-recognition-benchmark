@@ -3,8 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 class TPS_SpatialTransformerNetwork(nn.Module):
     """Rectification Network of RARE, namely TPS based STN"""
@@ -194,11 +192,15 @@ class GridGenerator(nn.Module):
     def build_P_prime(self, batch_C_prime):
         """Generate Grid from batch_C_prime [batch_size x F x 2]"""
         batch_size = batch_C_prime.size(0)
-        batch_inv_delta_C = self.inv_delta_C.repeat(batch_size, 1, 1)
-        batch_P_hat = self.P_hat.repeat(batch_size, 1, 1)
-        batch_C_prime_with_zeros = torch.cat(
-            (batch_C_prime, torch.zeros(batch_size, 3, 2).float().to(device)), dim=1
-        )  # batch_size x F+3 x 2
+        device = batch_C_prime.device
+        # Буферы автоматически перенесены на нужный device вместе с .to() модели
+        batch_inv_delta_C = self.inv_delta_C.unsqueeze(0).expand(batch_size, -1, -1)
+        batch_P_hat = self.P_hat.unsqueeze(0).expand(batch_size, -1, -1)
+        # создаём нули сразу на том же девайсе, что и batch_C_prime
+        zeros_3x2 = torch.zeros(
+            batch_size, 3, 2, device=device, dtype=batch_C_prime.dtype
+        )
+        batch_C_prime_with_zeros = torch.cat([batch_C_prime, zeros_3x2], dim=1)
         batch_T = torch.bmm(
             batch_inv_delta_C, batch_C_prime_with_zeros
         )  # batch_size x F+3 x 2

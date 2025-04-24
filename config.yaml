@@ -1,6 +1,6 @@
 Transformation: TPS
 FeatureExtraction: ResNet
-SequenceModeling: None
+SequenceModeling: BiLSTM
 Prediction: Attn
 
 imgH: 64

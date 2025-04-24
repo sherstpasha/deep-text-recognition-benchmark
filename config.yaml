@@ -1,36 +1,17 @@
-train_data: C:/Users/user/Desktop/megacorpus/gt_train.txt
-valid_data: C:/Users/user/Desktop/megacorpus/gt_test.txt
-exp_name: exp
-manualSeed: 1111
-workers: 8
-batch_size: 200
-num_iter: 1000000
-valInterval: 10000
-saved_model: ''
-FT: false
-adam: false
-lr: 1.0
-beta1: 0.9
-rho: 0.95
-eps: 1e-8
-grad_clip: 5
-baiduCTC: false
-select_data: MJ-ST
-batch_ratio: '1'
-total_data_usage_ratio: 1.0
-batch_max_length: 24
-imgH: 32
-imgW: 128
-rgb: false
-character: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя!\"#$%&'()*+,-./:;<=>?@[\\]№_`{|}~ €₽"
-sensitive: true
-PAD: false
-data_filtering_off: false
 Transformation: TPS
 FeatureExtraction: ResNet
-SequenceModeling: BiLSTM
+SequenceModeling: None
 Prediction: Attn
-num_fiducial: 20
+
+imgH: 64
+imgW: 256
+
 input_channel: 1
-output_channel: 512
+output_channel: 256
 hidden_size: 256
+
+batch_max_length: 25
+num_fiducial: 20
+
+rgb: false
+character: " !%'()*+,-./0123456789:;<=>[]^_v{|}~§«»АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюяёіѣѳѵ№"

@@ -2,14 +2,10 @@ from easyocr import Reader
 import numpy as np
 from tools import (
     convert_boxes_to_points,
-    Text2Line,
-    assign_boxes_to_lines,
-    convert_to_integers,
     merge_boxes_by_lines,
     crop_boxes,
     clean_recognized_text,
 )
-import os
 import yaml
 import torch
 import argparse
@@ -25,7 +21,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def detect_image_craft(image, gpu=False):
     # Загрузка изображения
-    image_width, image_height = image.shape[0], image.shape[1]
+    #image_width, image_height = image.shape[0], image.shape[1]
 
     # Инициализация EasyOCR Reader
     reader = Reader(["ru"], gpu=gpu, recognizer=None)
@@ -37,14 +33,12 @@ def detect_image_craft(image, gpu=False):
 
     h_boxes = h_boxes[0]
     f_boxes = f_boxes[0]
+
+    print(h_boxes)
     all_boxes = np.array(convert_boxes_to_points(h_boxes) + f_boxes)
 
-    text2line = Text2Line(max_iter=500)
 
-    sorted_lines_id = text2line.get_lines(all_boxes, image_width, image_height)
-    final_boxes = assign_boxes_to_lines(all_boxes, sorted_lines_id)
-
-    return convert_to_integers(final_boxes)
+    return all_boxes
 
 
 def check_model_device(model):
@@ -148,37 +142,4 @@ def recognize_text_from_images(image_pieces, model_dict):
     return recognized_texts
 
 
-def extract_text_from_image(image_or_path, recognize_model):
 
-    gpu = torch.cuda.is_available()
-
-    # Проверяем, является ли входное изображение путем или numpy.ndarray
-    if isinstance(image_or_path, str):
-        image = cv2.imread(image_or_path)
-        if image is None:
-            raise ValueError("Невозможно загрузить изображение по указанному пути.")
-    elif isinstance(image_or_path, np.ndarray):
-        image = image_or_path
-    else:
-        raise ValueError(
-            "image_or_path должен быть либо строкой пути, либо объектом numpy.ndarray"
-        )
-
-    final_boxes = detect_image_craft(image, gpu=gpu)
-    print(final_boxes)
-    line_boxes = merge_boxes_by_lines(final_boxes)
-
-    cropped_images_grouped = crop_boxes(np.array(image), final_boxes)
-
-    recognized_text = [
-        " ".join(recognize_text_from_images(image_piece, recognize_model))
-        for image_piece in cropped_images_grouped
-    ]
-
-    # Формируем результат в формате [([x1, y1, x2, y2], "string"), ...]
-    results = [
-        ([box[0], box[1], box[2], box[3]], text)
-        for box, text in zip(line_boxes, recognized_text)
-    ]
-
-    return results

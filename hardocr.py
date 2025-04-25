@@ -11,6 +11,9 @@ from model import Model
 from utils import CTCLabelConverter, AttnLabelConverter
 from torchvision import transforms
 from pydantic import BaseModel
+from PIL import ImageDraw
+import cv2
+import os
 
 
 class WordResponse(BaseModel):
@@ -162,15 +165,191 @@ class DocumentOCRPipeline:
 
         return model, converter, opt
 
-    def __call__(self, pil_img: Image.Image) -> PageResponse:
+    def recognize_word(
+        self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int
+    ) -> WordResponse:
+        """
+        Распознаёт один бокс:
+        1) Вырезает ROI из PIL-картинки
+        2) Применяет модель + очищает текст
+        3) Возвращает WordResponse
+
+        :param pil_img: исходное PIL.Image
+        :param box: кортеж (x0, y0, x1, y1)
+        :param word_idx: порядковый номер этого слова в строке
+        """
+        x0, y0, x1, y1 = box
+        crop = pil_img.crop((x0, y0, x1, y1))
+
+        # --- сохранение обрезка для отладки ---
+        if True:
+            fn = f"C:/Users/pasha/OneDrive/Рабочий стол/с архива/crop_{self._crop_counter:04d}.png"
+            crop.save(fn)
+            self._crop_counter += 1
+
+        raw = self._recognize_text(crop)
+        cleaned = self._clean_text(raw)
+        return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1)
+
+    def visualize(
+        self,
+        pil_img: Image.Image,
+        *,
+        show_words: bool = True,
+        show_strings: bool = True,
+        show_blocks: bool = True,
+        word_style: Dict[str, Any] = None,
+        string_style: Dict[str, Any] = None,
+        block_style: Dict[str, Any] = None,
+        deskew: bool = False,
+        rotate: float = 0.0,
+    ) -> Image.Image:
+        """
+        Рисует на копии входного изображения три уровня:
+          - words: outline/fill по word_style
+          - strings: outline/fill по string_style
+          - blocks: outline/fill по block_style
+
+        Дополнительные параметры:
+          :param deskew: если True — сначала автоматически выпрямить текст
+          :param rotate: повернуть изображение на указанный угол (в градусах)
+          :param word_style: dict с 'outline', 'fill', 'width' для слов
+          :param string_style: dict с 'outline', 'fill', 'width' для строк
+          :param block_style: dict с 'outline', 'fill', 'width' для блоков
+        """
+        # 0) предварительные трансформации
+        if deskew:
+            pil_img = self.deskew_pil(pil_img)
+        if rotate:
+            pil_img = pil_img.rotate(rotate, expand=True, resample=Image.BICUBIC)
+
+        # 1) устанавливаем дефолтные стили, если не заданы
+        word_style = word_style or {
+            "outline": (255, 0, 0, 255),
+            "fill": None,
+            "width": 1,
+        }
+        string_style = string_style or {
+            "outline": (0, 255, 0, 200),
+            "fill": (0, 255, 0, 50),
+            "width": 2,
+        }
+        block_style = block_style or {
+            "outline": (0, 0, 255, 255),
+            "fill": None,
+            "width": 3,
+        }
+
+        # 2) получаем структуру PageResponse (блоки/строки/слова)
+        page = self(pil_img)
+
+        # 3) готовим наложение
+        base = pil_img.convert("RGBA")
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # 4) рисуем блоки, строки и слова
+        for block in page.blocks:
+            if show_blocks and block_style.get("outline"):
+                draw.rectangle(
+                    [block.x1, block.y1, block.x2, block.y2],
+                    outline=block_style["outline"],
+                    width=block_style["width"],
+                    fill=block_style.get("fill"),
+                )
+
+            for string in block.strings:
+                if show_strings and string_style.get("outline"):
+                    draw.rectangle(
+                        [string.x1, string.y1, string.x2, string.y2],
+                        outline=string_style["outline"],
+                        width=string_style["width"],
+                        fill=string_style.get("fill"),
+                    )
+
+                if show_words:
+                    for w in string.words:
+                        if word_style.get("fill"):
+                            draw.rectangle(
+                                [w.x1, w.y1, w.x2, w.y2],
+                                fill=word_style["fill"],
+                                outline=None,
+                            )
+                        if word_style.get("outline"):
+                            draw.rectangle(
+                                [w.x1, w.y1, w.x2, w.y2],
+                                outline=word_style["outline"],
+                                width=word_style["width"],
+                                fill=None,
+                            )
+
+        # 5) комбинируем и возвращаем итог
+        result = Image.alpha_composite(base, overlay)
+        return result.convert("RGB")
+
+    @staticmethod
+    def compute_skew_angle(pil_img: Image.Image) -> float:
+        """
+        Находит угол наклона текста через HoughLines на гранях, возвращает
+        угол в градусах (положительный — наклон вправо).
+        """
+        # 1) переводим PIL → серое OpenCV
+        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
+        # 2) слегка размываем, чтобы убрать шум
+        blur = cv2.GaussianBlur(img, (5, 5), 0)
+        # 3) детектим грани
+        edges = cv2.Canny(blur, 50, 150, apertureSize=3)
+        # 4) находим прямые
+        lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=200)
+        if lines is None:
+            return 0.0
+        # 5) собираем углы
+        angles = []
+        for rho, theta in lines[:, 0]:
+            # преобразуем θ: от вертикальной к горизонтальной
+            angle = (theta - np.pi / 2) * 180 / np.pi
+            # берём только небольшие отклонения
+            if abs(angle) < 45:
+                angles.append(angle)
+        if not angles:
+            return 0.0
+        # 6) возвращаем медиану, чтобы выбросы не влияли
+        return float(np.median(angles))
+
+    @staticmethod
+    def deskew_pil(pil_img: Image.Image, max_angle: float = 15.0) -> Image.Image:
+        """
+        Поворачивает изображение на найденный угол, если он в пределах ±max_angle.
+        """
+        angle = DocumentOCRPipeline.compute_skew_angle(pil_img)
+        if abs(angle) > max_angle:
+            # если слишком большой угол — скорее всего артефакт
+            return pil_img
+        return pil_img.rotate(-angle, expand=True, resample=Image.BICUBIC)
+
+    def __call__(self, pil_img: Image.Image, *, deskew: bool = False) -> PageResponse:
+        self._crop_counter = 0
+
+        # 0) при необходимости выпрямляем
+        if deskew:
+            pil_img = self.deskew_pil(pil_img)
+
+        # 1) переводим в RGB и в numpy
         rgb_img = pil_img.convert("RGB")
         img_array = np.array(rgb_img)
 
-        # detect → merge → segment
-        h_boxes, f_boxes = self.reader.detect(img_array)
+        # 2) detect → merge → segment
+        h_boxes, f_boxes = self.reader.detect(
+            img_array,
+            optimal_num_chars=25,
+            link_threshold=0.3,
+            canvas_size=1280,
+        )
+        print(f_boxes)
         all_boxes = self._merge_boxes(h_boxes, f_boxes)
         columns = self._segment_columns(all_boxes)
 
+        # 3) ваш остальной код без изменений…
         blocks: List[BlockResponse] = []
         for b_idx, col in enumerate(columns):
             sorted_boxes = self._sort_boxes_reading_order(col)
@@ -178,18 +357,11 @@ class DocumentOCRPipeline:
 
             strings: List[StringResponse] = []
             for s_idx, line_boxes in enumerate(lines):
-                words: List[WordResponse] = []
-                for w_idx, (x0, y0, x1, y1) in enumerate(line_boxes):
-                    crop = rgb_img.crop((x0, y0, x1, y1))
-                    raw = self._recognize_text(crop)
-                    cleaned = self._clean_text(raw)
-                    words.append(
-                        WordResponse(
-                            index=w_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1
-                        )
-                    )
+                words = [
+                    self.recognize_word(rgb_img, box, w_idx)
+                    for w_idx, box in enumerate(line_boxes)
+                ]
 
-                # bbox строки по словам
                 xs1 = [w.x1 for w in words]
                 ys1 = [w.y1 for w in words]
                 xs2 = [w.x2 for w in words]
@@ -205,7 +377,6 @@ class DocumentOCRPipeline:
                     )
                 )
 
-            # bbox блока по строкам
             xs1 = [s.x1 for s in strings]
             ys1 = [s.y1 for s in strings]
             xs2 = [s.x2 for s in strings]
@@ -301,15 +472,32 @@ class DocumentOCRPipeline:
     def _merge_boxes(
         self, h_boxes: List[Any], f_boxes: List[Any]
     ) -> List[Tuple[int, int, int, int]]:
+        """
+        Объединяет боксы из h_boxes и f_boxes в список прямоугольников (x0, y0, x1, y1).
+        Обрезает все отрицательные x0, y0 → 0, чтобы не было «выпавших» боксов.
+        """
         raw_h = h_boxes[0] if h_boxes and isinstance(h_boxes[0], list) else []
         raw_f = f_boxes[0] if f_boxes and isinstance(f_boxes[0], list) else []
-        merged = []
-        for b in raw_h:
-            merged.append((int(b[0]), int(b[2]), int(b[1]), int(b[3])))
+        merged: List[Tuple[int, int, int, int]] = []
+
+        # горизонтальные прямоугольники
+        for box in raw_h:
+            x0 = max(0, int(box[0]))
+            y0 = max(0, int(box[2]))
+            x1 = int(box[1])
+            y1 = int(box[3])
+            merged.append((x0, y0, x1, y1))
+
+        # полигональные, приводим к axis-aligned
         for poly in raw_f:
             xs = [pt[0] for pt in poly]
             ys = [pt[1] for pt in poly]
-            merged.append((int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))))
+            x0 = max(0, int(min(xs)))
+            y0 = max(0, int(min(ys)))
+            x1 = int(max(xs))
+            y1 = int(max(ys))
+            merged.append((x0, y0, x1, y1))
+
         return merged
 
     def _find_gaps(self, boxes, start, end) -> List[int]:
@@ -351,41 +539,65 @@ class DocumentOCRPipeline:
         area = sum((b[2] - b[0]) * (b[3] - b[1]) for b in col)
         return (rect - area) / rect if rect else 1.0
 
-    def _segment_columns(self, boxes) -> List[List[Tuple[int, int, int, int]]]:
+    def _segment_columns(
+        self, boxes: List[Tuple[int, int, int, int]]
+    ) -> List[List[Tuple[int, int, int, int]]]:
+        """
+        Разбивает боксы на колонки по «пустым» вертикальным промежуткам.
+        В конце отфильтровывает пустые колонки перед сортировкой.
+        """
         if not boxes:
             return []
-        img_w = max(b[2] for b in boxes)
-        segs = [(0, img_w)]
-        seps = []
-        for _ in range(self.max_splits or img_w):
+
+        img_width = max(b[2] for b in boxes)
+        segments = [(0, img_width)]
+        separators: List[int] = []
+
+        # Находим оптимальные разрезы
+        for _ in range(self.max_splits or img_width):
             best = None
-            for i, (s, e) in enumerate(segs):
+            for idx, (s, e) in enumerate(segments):
                 for x in self._find_gaps(boxes, s, e):
                     if not (
                         any(b[2] <= x and b[0] >= s for b in boxes)
                         and any(b[0] >= x and b[2] <= e for b in boxes)
                     ):
                         continue
-                    sc = self._emptiness(boxes, s, x) + self._emptiness(boxes, x, e)
-                    if best is None or sc < best[0]:
-                        best = (sc, x, i)
+                    score = self._emptiness(boxes, s, x) + self._emptiness(boxes, x, e)
+                    if best is None or score < best[0]:
+                        best = (score, x, idx)
             if not best:
                 break
-            _, x, i = best
-            s, e = segs.pop(i)
-            seps.append(x)
-            segs.insert(i, (s, x))
-            segs.insert(i + 1, (x, e))
-            segs.sort()
-        parts = [(0, img_w)]
-        for x in seps:
-            new = []
+            _, x_split, idx = best
+            s, e = segments.pop(idx)
+            separators.append(x_split)
+            segments.insert(idx, (s, x_split))
+            segments.insert(idx + 1, (x_split, e))
+            segments.sort()
+
+        # Разбиваем по найденным разделителям
+        parts = [(0, img_width)]
+        for x in separators:
+            new_parts: List[Tuple[int, int]] = []
             for s, e in parts:
-                new += [(s, x), (x, e)] if s < x < e else [(s, e)]
-            parts = new
-        cols = []
+                if s < x < e:
+                    new_parts += [(s, x), (x, e)]
+                else:
+                    new_parts.append((s, e))
+            parts = new_parts
+
+        # Формируем колонки
+        cols: List[List[Tuple[int, int, int, int]]] = []
         for s, e in parts:
-            cols.append([b for b in boxes if b[0] >= s and b[2] <= e])
+            col = [b for b in boxes if b[0] >= s and b[2] <= e]
+            cols.append(col)
+
+        # Убираем пустые колонки
+        cols = [c for c in cols if c]
+        if not cols:
+            return []
+
+        # Сортируем по x-координате левого края
         return sorted(cols, key=lambda c: min(b[0] for b in c))
 
     def _sort_boxes_reading_order(self, boxes) -> List[Tuple[int, int, int, int]]:

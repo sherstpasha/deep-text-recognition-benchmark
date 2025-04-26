@@ -67,6 +67,7 @@ class DocumentOCRPipeline:
         *,
         device: Union[str, torch.device] = None,
         reader_params: Dict[str, Any] = None,
+        detect_params: Dict[str, Any] = None,
         max_splits: int = None,
         y_tol_ratio: float = 0.6,
         x_gap_ratio: float = 2.5,
@@ -76,6 +77,7 @@ class DocumentOCRPipeline:
         :param ocr_model_path: путь к весам .pth
         :param device: "cuda" или "cpu" или torch.device — для PyTorch и EasyOCR
         :param reader_params: доп. параметры для EasyOCR.Reader (кроме 'gpu')
+        :param detect_params: параметры для reader.detect (например, text_threshold и др.)
         """
         # 1) определяем self.device
         if device is None:
@@ -91,26 +93,22 @@ class DocumentOCRPipeline:
         )
 
         # 3) настраиваем EasyOCR с учётом self.device
-        default_params = {"lang_list": ["ru"]}
+        default_reader = {"lang_list": ["ru"]}
         if reader_params:
-            default_params.update(reader_params)
-        # проверяем конфликт по ключу 'gpu'
-        if "gpu" in default_params:
-            requested = bool(default_params["gpu"])
-            actual = self.device.type != "cpu"
-            if requested != actual:
-                warnings.warn(
-                    f"reader_params['gpu']={requested} конфликтует с device={self.device}; "
-                    f"используем device={self.device}."
-                )
-        reader_kwargs = default_params.copy()
-        # принудительно выставляем gpu в соотв. device
-        reader_kwargs["gpu"] = self.device.type != "cpu"
-        # убираем возможность override recognizer
-        reader_kwargs.pop("recognizer", None)
-        self.reader = Reader(**reader_kwargs, recognizer=None)
+            default_reader.update(reader_params)
+        default_reader['gpu'] = self.device.type != 'cpu'
+        default_reader.pop('recognizer', None)
+        self.reader = Reader(**default_reader, recognizer=None)
 
-        # 4) параметры колонок / строк
+        # 4) сохраняем detect-параметры
+        self.detect_params = detect_params or {}
+        self.detect_params.setdefault('text_threshold', 0.7)
+        self.detect_params.setdefault('low_text', 0.4)
+        self.detect_params.setdefault('link_threshold', 0.3)
+        self.detect_params.setdefault('canvas_size', 1280)
+        self.detect_params.setdefault('mag_ratio', 1.0)
+
+        # 5) параметры колонок / строк
         self.max_splits = max_splits
         self.y_tol_ratio = y_tol_ratio
         self.x_gap_ratio = x_gap_ratio
@@ -267,24 +265,22 @@ class DocumentOCRPipeline:
         result = Image.alpha_composite(base, overlay)
         return result.convert("RGB")
 
-    def __call__(self, pil_img: Image.Image) -> PageResponse:
 
+    def __call__(self, pil_img: Image.Image) -> PageResponse:
         # 1) переводим в RGB и в numpy
         rgb_img = pil_img.convert("RGB")
         img_array = np.array(rgb_img)
 
-        # 2) detect → merge → segment
+        # 2) detect → merge → segment с динамическими параметрами
         h_boxes, f_boxes = self.reader.detect(
             img_array,
-            optimal_num_chars=25,
-            link_threshold=0.3,
-            canvas_size=1280,
+            **self.detect_params
         )
-        print(f_boxes)
+
         all_boxes = self._merge_boxes(h_boxes, f_boxes)
         columns = self._segment_columns(all_boxes)
 
-        # 3) ваш остальной код без изменений…
+        # 3) основной цикл без изменений
         blocks: List[BlockResponse] = []
         for b_idx, col in enumerate(columns):
             sorted_boxes = self._sort_boxes_reading_order(col)
@@ -305,10 +301,7 @@ class DocumentOCRPipeline:
                     StringResponse(
                         index=s_idx,
                         words=words,
-                        x1=min(xs1),
-                        y1=min(ys1),
-                        x2=max(xs2),
-                        y2=max(ys2),
+                        x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
                     )
                 )
 
@@ -320,34 +313,57 @@ class DocumentOCRPipeline:
                 BlockResponse(
                     index=b_idx,
                     strings=strings,
-                    x1=min(xs1),
-                    y1=min(ys1),
-                    x2=max(xs2),
-                    y2=max(ys2),
+                    x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
                 )
             )
 
         return PageResponse(blocks=blocks)
 
     def _split_into_lines(
-        self, boxes: List[Tuple[int, int, int, int]], x_tol: int = 0
+        self, boxes: List[Tuple[int, int, int, int]]
     ) -> List[List[Tuple[int, int, int, int]]]:
         """
-        Разбивает отсортированный список боксов на строки.
-        Начало новой строки, если x1 текущего < x1 предыдущего - x_tol.
+        Группирует отсортированный (read-order) список боксов в строки,
+        используя вертикальный (y_tol_ratio) и горизонтальный (x_gap_ratio) допуски.
         """
         if not boxes:
             return []
-        lines = [[boxes[0]]]
-        prev_x0 = boxes[0][0]
-        for b in boxes[1:]:
-            x0 = b[0]
-            if x0 + x_tol < prev_x0:
-                # новая строка
-                lines.append([b])
+
+        # 1) сначала получаем «читаемый» порядок
+        sorted_boxes = self._sort_boxes_reading_order(boxes)
+
+        # 2) вычисляем среднюю высоту бокса
+        heights = [b[3] - b[1] for b in sorted_boxes]
+        avg_h = float(np.mean(heights)) if heights else 0.0
+
+        lines: List[List[Tuple[int, int, int, int]]] = []
+        for box in sorted_boxes:
+            x0, y0, x1, y1 = box
+            center_y = (y0 + y1) / 2
+
+            if not lines:
+                # первая строка
+                lines.append([box])
+                continue
+
+            # параметры предыдущей строки
+            prev_line = lines[-1]
+            prev_centers = [ (b[1] + b[3]) / 2 for b in prev_line ]
+            prev_center_y = float(np.mean(prev_centers))
+            last_box = prev_line[-1]
+            last_x1 = last_box[2]
+
+            # 3) проверяем, попадает ли новый бокс в ту же строку:
+            same_row = (
+                abs(center_y - prev_center_y) <= avg_h * self.y_tol_ratio
+                and (x0 - last_x1) <= avg_h * self.x_gap_ratio
+            )
+
+            if same_row:
+                prev_line.append(box)
             else:
-                lines[-1].append(b)
-            prev_x0 = x0
+                lines.append([box])
+
         return lines
 
     def _preprocess(self, image: Image.Image) -> torch.Tensor:

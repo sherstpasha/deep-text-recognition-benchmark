@@ -181,12 +181,6 @@ class DocumentOCRPipeline:
         x0, y0, x1, y1 = box
         crop = pil_img.crop((x0, y0, x1, y1))
 
-        # --- сохранение обрезка для отладки ---
-        if True:
-            fn = f"C:/Users/pasha/OneDrive/Рабочий стол/с архива/crop_{self._crop_counter:04d}.png"
-            crop.save(fn)
-            self._crop_counter += 1
-
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
         return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1)
@@ -196,61 +190,37 @@ class DocumentOCRPipeline:
         pil_img: Image.Image,
         *,
         show_words: bool = True,
-        show_strings: bool = True,
         show_blocks: bool = True,
+        connect_strings: bool = True,
         word_style: Dict[str, Any] = None,
-        string_style: Dict[str, Any] = None,
         block_style: Dict[str, Any] = None,
-        deskew: bool = False,
-        rotate: float = 0.0,
+        line_style: Dict[str, Any] = None,
     ) -> Image.Image:
         """
-        Рисует на копии входного изображения три уровня:
-          - words: outline/fill по word_style
-          - strings: outline/fill по string_style
-          - blocks: outline/fill по block_style
+        Рисует на копии входного изображения:
+          - слова: outline/fill по word_style
+          - блоки: outline/fill по block_style
+          - строки: соединительные линии между соседними словами по line_style
 
-        Дополнительные параметры:
-          :param deskew: если True — сначала автоматически выпрямить текст
-          :param rotate: повернуть изображение на указанный угол (в градусах)
-          :param word_style: dict с 'outline', 'fill', 'width' для слов
-          :param string_style: dict с 'outline', 'fill', 'width' для строк
-          :param block_style: dict с 'outline', 'fill', 'width' для блоков
+        :param connect_strings: если True — рисовать линии между словами одной строки
+        :param line_style: dict с 'fill' (цвет RGBA) и 'width' для линий строк
         """
-        # 0) предварительные трансформации
-        if deskew:
-            pil_img = self.deskew_pil(pil_img)
-        if rotate:
-            pil_img = pil_img.rotate(rotate, expand=True, resample=Image.BICUBIC)
+        # 1) стили по умолчанию
+        word_style = word_style or {"outline": (255, 0, 0, 255), "fill": None, "width": 1}
+        block_style = block_style or {"outline": (0, 0, 255, 255), "fill": None, "width": 3}
+        line_style = line_style or {"fill": (0, 255, 0, 200), "width": 5}
 
-        # 1) устанавливаем дефолтные стили, если не заданы
-        word_style = word_style or {
-            "outline": (255, 0, 0, 255),
-            "fill": None,
-            "width": 1,
-        }
-        string_style = string_style or {
-            "outline": (0, 255, 0, 200),
-            "fill": (0, 255, 0, 50),
-            "width": 2,
-        }
-        block_style = block_style or {
-            "outline": (0, 0, 255, 255),
-            "fill": None,
-            "width": 3,
-        }
-
-        # 2) получаем структуру PageResponse (блоки/строки/слова)
+        # 2) получаем структуру PageResponse
         page = self(pil_img)
 
-        # 3) готовим наложение
+        # 3) подготовка холстов
         base = pil_img.convert("RGBA")
         overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
-        # 4) рисуем блоки, строки и слова
-        for block in page.blocks:
-            if show_blocks and block_style.get("outline"):
+        # 4) рисуем блоки
+        if show_blocks:
+            for block in page.blocks:
                 draw.rectangle(
                     [block.x1, block.y1, block.x2, block.y2],
                     outline=block_style["outline"],
@@ -258,16 +228,10 @@ class DocumentOCRPipeline:
                     fill=block_style.get("fill"),
                 )
 
-            for string in block.strings:
-                if show_strings and string_style.get("outline"):
-                    draw.rectangle(
-                        [string.x1, string.y1, string.x2, string.y2],
-                        outline=string_style["outline"],
-                        width=string_style["width"],
-                        fill=string_style.get("fill"),
-                    )
-
-                if show_words:
+        # 5) рисуем слова
+        if show_words:
+            for block in page.blocks:
+                for string in block.strings:
                     for w in string.words:
                         if word_style.get("fill"):
                             draw.rectangle(
@@ -283,56 +247,27 @@ class DocumentOCRPipeline:
                                 fill=None,
                             )
 
-        # 5) комбинируем и возвращаем итог
+        # 6) рисуем соединительные линии для строк
+        if connect_strings:
+            for block in page.blocks:
+                for string in block.strings:
+                    # сортируем слова по x1
+                    words = sorted(string.words, key=lambda w: w.x1)
+                    for prev, curr in zip(words, words[1:]):
+                        # точки: (x2_prev, center_y_prev) → (x1_curr, center_y_curr)
+                        y_prev = (prev.y1 + prev.y2) // 2
+                        y_curr = (curr.y1 + curr.y2) // 2
+                        draw.line(
+                            [(prev.x2, y_prev), (curr.x1, y_curr)],
+                            fill=line_style["fill"],
+                            width=line_style["width"],
+                        )
+
+        # 7) комбинируем и возвращаем
         result = Image.alpha_composite(base, overlay)
         return result.convert("RGB")
 
-    @staticmethod
-    def compute_skew_angle(pil_img: Image.Image) -> float:
-        """
-        Находит угол наклона текста через HoughLines на гранях, возвращает
-        угол в градусах (положительный — наклон вправо).
-        """
-        # 1) переводим PIL → серое OpenCV
-        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
-        # 2) слегка размываем, чтобы убрать шум
-        blur = cv2.GaussianBlur(img, (5, 5), 0)
-        # 3) детектим грани
-        edges = cv2.Canny(blur, 50, 150, apertureSize=3)
-        # 4) находим прямые
-        lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=200)
-        if lines is None:
-            return 0.0
-        # 5) собираем углы
-        angles = []
-        for rho, theta in lines[:, 0]:
-            # преобразуем θ: от вертикальной к горизонтальной
-            angle = (theta - np.pi / 2) * 180 / np.pi
-            # берём только небольшие отклонения
-            if abs(angle) < 45:
-                angles.append(angle)
-        if not angles:
-            return 0.0
-        # 6) возвращаем медиану, чтобы выбросы не влияли
-        return float(np.median(angles))
-
-    @staticmethod
-    def deskew_pil(pil_img: Image.Image, max_angle: float = 15.0) -> Image.Image:
-        """
-        Поворачивает изображение на найденный угол, если он в пределах ±max_angle.
-        """
-        angle = DocumentOCRPipeline.compute_skew_angle(pil_img)
-        if abs(angle) > max_angle:
-            # если слишком большой угол — скорее всего артефакт
-            return pil_img
-        return pil_img.rotate(-angle, expand=True, resample=Image.BICUBIC)
-
-    def __call__(self, pil_img: Image.Image, *, deskew: bool = False) -> PageResponse:
-        self._crop_counter = 0
-
-        # 0) при необходимости выпрямляем
-        if deskew:
-            pil_img = self.deskew_pil(pil_img)
+    def __call__(self, pil_img: Image.Image) -> PageResponse:
 
         # 1) переводим в RGB и в numpy
         rgb_img = pil_img.convert("RGB")

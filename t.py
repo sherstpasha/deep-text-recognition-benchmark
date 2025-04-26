@@ -40,8 +40,8 @@ import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 config_path = "config.yaml"
-ocr_model_path = r"C:\Users\pasha\OneDrive\Рабочий стол\с архива\best_accuracy.pth"
-image_path = r"C:\Users\pasha\OneDrive\Рабочий стол\с архива\crop_0075.png"
+ocr_model_path = r"C:\shared\saved_models_25_04\TPS-ResNet-BiLSTM-Attn-Seed1111\best_norm_ED.pth"
+image_path = r"D:\Archive_19_04\combined_images\9.jpg"
 
 pipeline = DocumentOCRPipeline(
     config_path=config_path,
@@ -60,9 +60,9 @@ bin_img = orig
 
 # распознаём уже на бинаризованном
 # распознаём уже на бинаризованном
-page = pipeline(bin_img, deskew=True)
+page = pipeline(bin_img)
 print(page.to_plain_text())
 
 # и визуализируем
-vis = pipeline.visualize(bin_img, show_strings=False, deskew=True)
+vis = pipeline.visualize(bin_img)
 vis.show()

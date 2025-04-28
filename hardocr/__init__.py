@@ -7,8 +7,8 @@ from typing import List, Tuple, Any, Dict, Union
 import numpy as np
 from PIL import Image
 from easyocr import Reader
-from model import Model
-from utils import CTCLabelConverter, AttnLabelConverter
+from .model import Model
+from .utils import CTCLabelConverter, AttnLabelConverter
 from torchvision import transforms
 from pydantic import BaseModel
 from PIL import ImageDraw
@@ -70,7 +70,7 @@ class DocumentOCRPipeline:
         detect_params: Dict[str, Any] = None,
         max_splits: int = None,
         y_tol_ratio: float = 0.6,
-        x_gap_ratio: float = 2.5,
+        x_gap_ratio: float = 3.5,
     ):
         """
         :param config_path: путь к YAML-конфигу модели
@@ -163,24 +163,58 @@ class DocumentOCRPipeline:
 
         return model, converter, opt
 
-    def recognize_word(
-        self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int
-    ) -> WordResponse:
+    def _resolve_intersections(self, boxes: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+        """
+        Проверяет пересечения между боксами, сжимает их на 10% (или заданное значение),
+        пока пересечения не исчезнут. Возвращает список боксов в том же порядке, что и исходный.
+        """
+        # Сжимаем боксы до тех пор, пока пересечения не исчезнут
+        def do_boxes_intersect(box1, box2):
+            return not (box1[2] <= box2[0] or box2[2] <= box1[0] or box1[3] <= box2[1] or box2[3] <= box1[1])
+
+        resolved_boxes = boxes[:]
+        changed = True
+        
+        while changed:
+            changed = False
+            new_boxes = []
+            for i in range(len(resolved_boxes)):
+                for j in range(i + 1, len(resolved_boxes)):
+                    if do_boxes_intersect(resolved_boxes[i], resolved_boxes[j]):
+                        # Находим бокс с большим пересечением
+                        box1, box2 = resolved_boxes[i], resolved_boxes[j]
+                        if (box1[2] - box1[0]) > (box2[2] - box2[0]):
+                            # Сжимаем box1
+                            x0, y0, x1, y1 = box1
+                            box1 = (x0, y0, int(x1 - (x1 - x0) * 0.1), y1)  # Сжимаем на 10%
+                        else:
+                            # Сжимаем box2
+                            x0, y0, x1, y1 = box2
+                            box2 = (x0, y0, int(x1 - (x1 - x0) * 0.1), y1)  # Сжимаем на 10%
+
+                        # Обновляем боксы
+                        resolved_boxes[i] = box1
+                        resolved_boxes[j] = box2
+                        changed = True
+
+            new_boxes = resolved_boxes
+
+        return new_boxes
+
+    def recognize_word(self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int) -> WordResponse:
         """
         Распознаёт один бокс:
         1) Вырезает ROI из PIL-картинки
         2) Применяет модель + очищает текст
         3) Возвращает WordResponse
-
-        :param pil_img: исходное PIL.Image
-        :param box: кортеж (x0, y0, x1, y1)
-        :param word_idx: порядковый номер этого слова в строке
         """
         x0, y0, x1, y1 = box
         crop = pil_img.crop((x0, y0, x1, y1))
 
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
+        
+        # Возвращаем WordResponse с обязательным индексом
         return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1)
 
     def visualize(
@@ -190,23 +224,24 @@ class DocumentOCRPipeline:
         show_words: bool = True,
         show_blocks: bool = True,
         connect_strings: bool = True,
+        show_numbers: bool = True,  # Новый параметр для отображения номеров
         word_style: Dict[str, Any] = None,
         block_style: Dict[str, Any] = None,
         line_style: Dict[str, Any] = None,
+        number_style: Dict[str, Any] = None  # Новый параметр для стиля номеров
     ) -> Image.Image:
         """
         Рисует на копии входного изображения:
-          - слова: outline/fill по word_style
-          - блоки: outline/fill по block_style
-          - строки: соединительные линии между соседними словами по line_style
-
-        :param connect_strings: если True — рисовать линии между словами одной строки
-        :param line_style: dict с 'fill' (цвет RGBA) и 'width' для линий строк
+        - слова: outline/fill по word_style
+        - блоки: outline/fill по block_style
+        - строки: соединительные линии между соседними словами по line_style
+        - цифры порядковые для боксов (если show_numbers=True)
         """
         # 1) стили по умолчанию
         word_style = word_style or {"outline": (255, 0, 0, 255), "fill": None, "width": 1}
         block_style = block_style or {"outline": (0, 0, 255, 255), "fill": None, "width": 3}
         line_style = line_style or {"fill": (0, 255, 0, 200), "width": 5}
+        number_style = number_style or {"fill": (0, 0, 0, 255), "font_size": 30, "bg_fill": (255, 255, 255, 128)}  # Белый полупрозрачный фон
 
         # 2) получаем структуру PageResponse
         page = self(pil_img)
@@ -230,16 +265,19 @@ class DocumentOCRPipeline:
         if show_words:
             for block in page.blocks:
                 for string in block.strings:
-                    for w in string.words:
+                    words = sorted(string.words, key=lambda w: w.x1)  # Сортируем слова по x1
+                    for i, word in enumerate(words):
+                        word.index = i + 1  # Присваиваем индекс каждому слову
+
                         if word_style.get("fill"):
                             draw.rectangle(
-                                [w.x1, w.y1, w.x2, w.y2],
+                                [word.x1, word.y1, word.x2, word.y2],
                                 fill=word_style["fill"],
                                 outline=None,
                             )
                         if word_style.get("outline"):
                             draw.rectangle(
-                                [w.x1, w.y1, w.x2, w.y2],
+                                [word.x1, word.y1, word.x2, word.y2],
                                 outline=word_style["outline"],
                                 width=word_style["width"],
                                 fill=None,
@@ -261,9 +299,38 @@ class DocumentOCRPipeline:
                             width=line_style["width"],
                         )
 
-        # 7) комбинируем и возвращаем
+        # 7) рисуем порядковые номера боксов
+        if show_numbers:
+            for block in page.blocks:
+                for string in block.strings:
+                    for word in string.words:
+                        # Получаем текстовый номер
+                        text_number = str(word.index)  # Используем индекс слова
+                        text_size = number_style.get("font_size", 30)
+
+                        # Находим центр бокса
+                        text_x = (word.x1 + word.x2) / 2
+                        text_y = (word.y1 + word.y2) / 2
+
+                        # Нарисовать фон (прямоугольник) с полупрозрачным белым цветом
+                        bg_width = text_size * len(text_number)  # Ширина фона зависит от длины текста
+                        bg_height = text_size  # Высота фона равна размеру шрифта
+                        draw.rectangle(
+                            [text_x - bg_width / 2, text_y - bg_height / 2, text_x + bg_width / 2, text_y + bg_height / 2],
+                            fill=number_style["bg_fill"],  # Полупрозрачный белый фон
+                        )
+
+                        # Рисуем черный текст поверх фона
+                        draw.text(
+                            (text_x - text_size / 2, text_y - text_size / 2),  # Центрируем текст
+                            text_number,
+                            fill=number_style["fill"],  # Черный цвет текста
+                        )
+
+        # 8) комбинируем и возвращаем
         result = Image.alpha_composite(base, overlay)
         return result.convert("RGB")
+
 
 
     def __call__(self, pil_img: Image.Image) -> PageResponse:
@@ -283,14 +350,14 @@ class DocumentOCRPipeline:
         # 3) основной цикл без изменений
         blocks: List[BlockResponse] = []
         for b_idx, col in enumerate(columns):
-            sorted_boxes = self._sort_boxes_reading_order(col)
+            sorted_boxes = self._sort_boxes_reading_order_with_resolutions(col)
             lines = self._split_into_lines(sorted_boxes)
 
             strings: List[StringResponse] = []
             for s_idx, line_boxes in enumerate(lines):
                 words = [
-                    self.recognize_word(rgb_img, box, w_idx)
-                    for w_idx, box in enumerate(line_boxes)
+                    self.recognize_word(rgb_img, box, word_idx)  # Передаем индекс для каждого слова
+                    for word_idx, box in enumerate(line_boxes)
                 ]
 
                 xs1 = [w.x1 for w in words]
@@ -330,7 +397,7 @@ class DocumentOCRPipeline:
             return []
 
         # 1) сначала получаем «читаемый» порядок
-        sorted_boxes = self._sort_boxes_reading_order(boxes)
+        sorted_boxes = self._sort_boxes_reading_order_with_resolutions(boxes)
 
         # 2) вычисляем среднюю высоту бокса
         heights = [b[3] - b[1] for b in sorted_boxes]
@@ -574,3 +641,17 @@ class DocumentOCRPipeline:
         for ln in lines:
             ln.sort(key=lambda v: v[0])
         return [v for ln in lines for v in ln]
+    
+    def _sort_boxes_reading_order_with_resolutions(self, boxes: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+        """
+        Сортирует боксы с учетом сжатых размеров для правильной сортировки, но возвращает
+        оригинальные размеры боксов.
+        """
+        # 1) Сначала разрешим пересечения (сожмем боксы)
+        compressed_boxes = self._resolve_intersections(boxes)
+
+        # 2) Теперь сортируем сжатыми размерами
+        sorted_compressed_boxes = self._sort_boxes_reading_order(compressed_boxes)
+
+        # 3) Возвращаем оригинальные боксы в том порядке, в котором они были отсортированы
+        return [boxes[compressed_boxes.index(b)] for b in sorted_compressed_boxes]

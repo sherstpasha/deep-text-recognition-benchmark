@@ -8,7 +8,7 @@ install_requires = (here / "requirements.txt").read_text().splitlines()
 
 setup(
     name="hardocr",
-    version="0.1.1",
+    version="0.1.2",
     description="None",
     install_requires=install_requires,
 )

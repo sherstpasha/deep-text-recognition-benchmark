@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from PIL import ImageDraw
 import cv2
 import os
+from PIL import ImageEnhance
 
 
 class WordResponse(BaseModel):
@@ -70,7 +71,12 @@ class DocumentOCRPipeline:
         detect_params: Dict[str, Any] = None,
         max_splits: int = None,
         y_tol_ratio: float = 0.6,
-        x_gap_ratio: float = 3.5,
+        x_gap_ratio: float = np.inf,
+        rotate_threshold: float = 1.5,
+        contrast: float = 0.0,
+        sharpness: float = 0.0,
+        brightness: float = 0.0,
+        gamma: float = 1.0,
     ):
         """
         :param config_path: путь к YAML-конфигу модели
@@ -112,6 +118,40 @@ class DocumentOCRPipeline:
         self.max_splits = max_splits
         self.y_tol_ratio = y_tol_ratio
         self.x_gap_ratio = x_gap_ratio
+        self.rotate_threshold = rotate_threshold
+
+        self.contrast = contrast
+        self.sharpness = sharpness
+        self.brightness = brightness
+        self.gamma = gamma
+
+    def _augment_crop(self, image: Image.Image) -> Image.Image:
+        """
+        Применяет предобработку к кропу на основе заданных параметров.
+        """
+        # Контраст
+        if self.contrast and self.contrast != 0.0:
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.0 + self.contrast)
+
+        # Резкость
+        if self.sharpness and self.sharpness != 0.0:
+            enhancer = ImageEnhance.Sharpness(image)
+            image = enhancer.enhance(1.0 + self.sharpness)
+
+        # Яркость
+        if self.brightness and self.brightness != 0.0:
+            enhancer = ImageEnhance.Brightness(image)
+            image = enhancer.enhance(1.0 + self.brightness)
+
+        # Гамма
+        if self.gamma and self.gamma != 1.0:
+            gamma_inv = 1.0 / self.gamma
+            table = [((i / 255.0) ** gamma_inv) * 255 for i in range(256)]
+            table = np.array(table).clip(0, 255).astype('uint8')
+            image = image.point(lambda x: table[x])
+
+        return image
 
     def _load_model(self, config_path: str, model_path: str):
         """
@@ -205,16 +245,23 @@ class DocumentOCRPipeline:
         """
         Распознаёт один бокс:
         1) Вырезает ROI из PIL-картинки
-        2) Применяет модель + очищает текст
-        3) Возвращает WordResponse
+        2) При необходимости поворачивает ROI на 90 градусов
+        3) Применяет модель + очищает текст
+        4) Возвращает WordResponse
         """
         x0, y0, x1, y1 = box
         crop = pil_img.crop((x0, y0, x1, y1))
 
+        # Проверяем нужно ли повернуть
+        width, height = crop.size
+
+        if height > width * self.rotate_threshold:
+            crop = crop.rotate(90, expand=True)  # Поворачиваем на +90 градусов по часовой
+            
+        crop = self._augment_crop(crop)
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
-        
-        # Возвращаем WordResponse с обязательным индексом
+
         return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1)
 
     def visualize(

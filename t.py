@@ -15,7 +15,7 @@ import torch
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 config_path = 'config.yaml'
 ocr_model_path = r"C:\shared\saved_models_25_04\TPS-ResNet-BiLSTM-Attn-Seed1111\best_norm_ED.pth"
-image_path = r"D:\Archive_19_04\combined_images\1330.jpg"
+image_path = r"C:\shared\Archive_19_04\combined_images\12614.jpg"
 
 # Создание пайплайна с вынесенными detect-параметрами
 pipeline = DocumentOCRPipeline(

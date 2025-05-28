@@ -6,7 +6,6 @@ import warnings
 from typing import List, Tuple, Any, Dict, Union
 import numpy as np
 from PIL import Image
-from easyocr import Reader
 from .model import Model
 from .utils import CTCLabelConverter, AttnLabelConverter
 from torchvision import transforms
@@ -15,6 +14,7 @@ from PIL import ImageDraw
 import cv2
 import os
 from PIL import ImageEnhance
+from manuscript.detectors import EASTInfer
 
 
 class WordResponse(BaseModel):
@@ -67,7 +67,6 @@ class DocumentOCRPipeline:
         ocr_model_path: str,
         *,
         device: Union[str, torch.device] = None,
-        reader_params: Dict[str, Any] = None,
         detect_params: Dict[str, Any] = None,
         max_splits: int = None,
         y_tol_ratio: float = 0.6,
@@ -78,13 +77,6 @@ class DocumentOCRPipeline:
         brightness: float = 0.0,
         gamma: float = 1.0,
     ):
-        """
-        :param config_path: путь к YAML-конфигу модели
-        :param ocr_model_path: путь к весам .pth
-        :param device: "cuda" или "cpu" или torch.device — для PyTorch и EasyOCR
-        :param reader_params: доп. параметры для EasyOCR.Reader (кроме 'gpu')
-        :param detect_params: параметры для reader.detect (например, text_threshold и др.)
-        """
         # 1) определяем self.device
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -98,28 +90,26 @@ class DocumentOCRPipeline:
             config_path, ocr_model_path
         )
 
-        # 3) настраиваем EasyOCR с учётом self.device
-        default_reader = {"lang_list": ["ru"]}
-        if reader_params:
-            default_reader.update(reader_params)
-        default_reader['gpu'] = self.device.type != 'cpu'
-        default_reader.pop('recognizer', None)
-        self.reader = Reader(**default_reader, recognizer=None)
+        # 3) инициализируем детектор EAST
+        east_cfg = detect_params or {}
+        weights = east_cfg.pop("weights_path", None)
+        self.detector = EASTInfer(
+            weights_path=weights,
+            device=self.device.type,
+            target_size=east_cfg.get("target_size", 1280),
+            score_geo_scale=east_cfg.get("score_geo_scale", 0.25),
+            shrink_ratio=east_cfg.get("shrink_ratio", 0.6),
+            score_thresh=east_cfg.get("score_thresh", 0.9),
+            iou_threshold=east_cfg.get("iou_threshold", 0.2),
+        )
 
-        # 4) сохраняем detect-параметры
-        self.detect_params = detect_params or {}
-        self.detect_params.setdefault('text_threshold', 0.7)
-        self.detect_params.setdefault('low_text', 0.4)
-        self.detect_params.setdefault('link_threshold', 0.3)
-        self.detect_params.setdefault('canvas_size', 1280)
-        self.detect_params.setdefault('mag_ratio', 1.0)
-
-        # 5) параметры колонок / строк
+        # 4) параметры колонок / строк
         self.max_splits = max_splits
         self.y_tol_ratio = y_tol_ratio
         self.x_gap_ratio = x_gap_ratio
         self.rotate_threshold = rotate_threshold
 
+        # 5) аугментация
         self.contrast = contrast
         self.sharpness = sharpness
         self.brightness = brightness
@@ -148,7 +138,7 @@ class DocumentOCRPipeline:
         if self.gamma and self.gamma != 1.0:
             gamma_inv = 1.0 / self.gamma
             table = [((i / 255.0) ** gamma_inv) * 255 for i in range(256)]
-            table = np.array(table).clip(0, 255).astype('uint8')
+            table = np.array(table).clip(0, 255).astype("uint8")
             image = image.point(lambda x: table[x])
 
         return image
@@ -203,18 +193,26 @@ class DocumentOCRPipeline:
 
         return model, converter, opt
 
-    def _resolve_intersections(self, boxes: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+    def _resolve_intersections(
+        self, boxes: List[Tuple[int, int, int, int]]
+    ) -> List[Tuple[int, int, int, int]]:
         """
         Проверяет пересечения между боксами, сжимает их на 10% (или заданное значение),
         пока пересечения не исчезнут. Возвращает список боксов в том же порядке, что и исходный.
         """
+
         # Сжимаем боксы до тех пор, пока пересечения не исчезнут
         def do_boxes_intersect(box1, box2):
-            return not (box1[2] <= box2[0] or box2[2] <= box1[0] or box1[3] <= box2[1] or box2[3] <= box1[1])
+            return not (
+                box1[2] <= box2[0]
+                or box2[2] <= box1[0]
+                or box1[3] <= box2[1]
+                or box2[3] <= box1[1]
+            )
 
         resolved_boxes = boxes[:]
         changed = True
-        
+
         while changed:
             changed = False
             new_boxes = []
@@ -226,11 +224,21 @@ class DocumentOCRPipeline:
                         if (box1[2] - box1[0]) > (box2[2] - box2[0]):
                             # Сжимаем box1
                             x0, y0, x1, y1 = box1
-                            box1 = (x0, y0, int(x1 - (x1 - x0) * 0.1), y1)  # Сжимаем на 10%
+                            box1 = (
+                                x0,
+                                y0,
+                                int(x1 - (x1 - x0) * 0.1),
+                                y1,
+                            )  # Сжимаем на 10%
                         else:
                             # Сжимаем box2
                             x0, y0, x1, y1 = box2
-                            box2 = (x0, y0, int(x1 - (x1 - x0) * 0.1), y1)  # Сжимаем на 10%
+                            box2 = (
+                                x0,
+                                y0,
+                                int(x1 - (x1 - x0) * 0.1),
+                                y1,
+                            )  # Сжимаем на 10%
 
                         # Обновляем боксы
                         resolved_boxes[i] = box1
@@ -241,7 +249,9 @@ class DocumentOCRPipeline:
 
         return new_boxes
 
-    def recognize_word(self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int) -> WordResponse:
+    def recognize_word(
+        self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int
+    ) -> WordResponse:
         """
         Распознаёт один бокс:
         1) Вырезает ROI из PIL-картинки
@@ -256,8 +266,10 @@ class DocumentOCRPipeline:
         width, height = crop.size
 
         if height > width * self.rotate_threshold:
-            crop = crop.rotate(90, expand=True)  # Поворачиваем на +90 градусов по часовой
-            
+            crop = crop.rotate(
+                90, expand=True
+            )  # Поворачиваем на +90 градусов по часовой
+
         crop = self._augment_crop(crop)
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
@@ -275,7 +287,7 @@ class DocumentOCRPipeline:
         word_style: Dict[str, Any] = None,
         block_style: Dict[str, Any] = None,
         line_style: Dict[str, Any] = None,
-        number_style: Dict[str, Any] = None  # Новый параметр для стиля номеров
+        number_style: Dict[str, Any] = None,  # Новый параметр для стиля номеров
     ) -> Image.Image:
         """
         Рисует на копии входного изображения:
@@ -285,10 +297,22 @@ class DocumentOCRPipeline:
         - цифры порядковые для боксов (если show_numbers=True)
         """
         # 1) стили по умолчанию
-        word_style = word_style or {"outline": (255, 0, 0, 255), "fill": None, "width": 1}
-        block_style = block_style or {"outline": (0, 0, 255, 255), "fill": None, "width": 3}
+        word_style = word_style or {
+            "outline": (255, 0, 0, 255),
+            "fill": None,
+            "width": 1,
+        }
+        block_style = block_style or {
+            "outline": (0, 0, 255, 255),
+            "fill": None,
+            "width": 3,
+        }
         line_style = line_style or {"fill": (0, 255, 0, 200), "width": 5}
-        number_style = number_style or {"fill": (0, 0, 0, 255), "font_size": 30, "bg_fill": (255, 255, 255, 128)}  # Белый полупрозрачный фон
+        number_style = number_style or {
+            "fill": (0, 0, 0, 255),
+            "font_size": 30,
+            "bg_fill": (255, 255, 255, 128),
+        }  # Белый полупрозрачный фон
 
         # 2) получаем структуру PageResponse
         page = self(pil_img)
@@ -312,7 +336,9 @@ class DocumentOCRPipeline:
         if show_words:
             for block in page.blocks:
                 for string in block.strings:
-                    words = sorted(string.words, key=lambda w: w.x1)  # Сортируем слова по x1
+                    words = sorted(
+                        string.words, key=lambda w: w.x1
+                    )  # Сортируем слова по x1
                     for i, word in enumerate(words):
                         word.index = i + 1  # Присваиваем индекс каждому слову
 
@@ -360,16 +386,26 @@ class DocumentOCRPipeline:
                         text_y = (word.y1 + word.y2) / 2
 
                         # Нарисовать фон (прямоугольник) с полупрозрачным белым цветом
-                        bg_width = text_size * len(text_number)  # Ширина фона зависит от длины текста
+                        bg_width = text_size * len(
+                            text_number
+                        )  # Ширина фона зависит от длины текста
                         bg_height = text_size  # Высота фона равна размеру шрифта
                         draw.rectangle(
-                            [text_x - bg_width / 2, text_y - bg_height / 2, text_x + bg_width / 2, text_y + bg_height / 2],
+                            [
+                                text_x - bg_width / 2,
+                                text_y - bg_height / 2,
+                                text_x + bg_width / 2,
+                                text_y + bg_height / 2,
+                            ],
                             fill=number_style["bg_fill"],  # Полупрозрачный белый фон
                         )
 
                         # Рисуем черный текст поверх фона
                         draw.text(
-                            (text_x - text_size / 2, text_y - text_size / 2),  # Центрируем текст
+                            (
+                                text_x - text_size / 2,
+                                text_y - text_size / 2,
+                            ),  # Центрируем текст
                             text_number,
                             fill=number_style["fill"],  # Черный цвет текста
                         )
@@ -378,23 +414,32 @@ class DocumentOCRPipeline:
         result = Image.alpha_composite(base, overlay)
         return result.convert("RGB")
 
-
-
     def __call__(self, pil_img: Image.Image) -> PageResponse:
         # 1) переводим в RGB и в numpy
         rgb_img = pil_img.convert("RGB")
         img_array = np.array(rgb_img)
 
-        # 2) detect → merge → segment с динамическими параметрами
-        h_boxes, f_boxes = self.reader.detect(
-            img_array,
-            **self.detect_params
-        )
+        # 2) detect → extract boxes → rescale
+        det_page = self.detector.infer(img_array)
+        h, w = img_array.shape[:2]
+        ts = self.detector.target_size
+        sx, sy = w / ts, h / ts
 
-        all_boxes = self._merge_boxes(h_boxes, f_boxes)
+        all_boxes: List[Tuple[int, int, int, int]] = []
+        for block in det_page.blocks:
+            for word in block.words:
+                # word.polygon: List[List[float]] 4 points
+                scaled = [(int(x * sx), int(y * sy)) for x, y in word.polygon]
+                x0 = min(x for x, y in scaled)
+                y0 = min(y for x, y in scaled)
+                x1 = max(x for x, y in scaled)
+                y1 = max(y for x, y in scaled)
+                all_boxes.append((x0, y0, x1, y1))
+
+        # 3) сегментация на колонки
         columns = self._segment_columns(all_boxes)
 
-        # 3) основной цикл без изменений
+        # 4) основной цикл распознавания и сбор структуры
         blocks: List[BlockResponse] = []
         for b_idx, col in enumerate(columns):
             sorted_boxes = self._sort_boxes_reading_order_with_resolutions(col)
@@ -403,10 +448,9 @@ class DocumentOCRPipeline:
             strings: List[StringResponse] = []
             for s_idx, line_boxes in enumerate(lines):
                 words = [
-                    self.recognize_word(rgb_img, box, word_idx)  # Передаем индекс для каждого слова
+                    self.recognize_word(rgb_img, box, word_idx)
                     for word_idx, box in enumerate(line_boxes)
                 ]
-
                 xs1 = [w.x1 for w in words]
                 ys1 = [w.y1 for w in words]
                 xs2 = [w.x2 for w in words]
@@ -415,7 +459,10 @@ class DocumentOCRPipeline:
                     StringResponse(
                         index=s_idx,
                         words=words,
-                        x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
+                        x1=min(xs1),
+                        y1=min(ys1),
+                        x2=max(xs2),
+                        y2=max(ys2),
                     )
                 )
 
@@ -427,7 +474,10 @@ class DocumentOCRPipeline:
                 BlockResponse(
                     index=b_idx,
                     strings=strings,
-                    x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
+                    x1=min(xs1),
+                    y1=min(ys1),
+                    x2=max(xs2),
+                    y2=max(ys2),
                 )
             )
 
@@ -462,7 +512,7 @@ class DocumentOCRPipeline:
 
             # параметры предыдущей строки
             prev_line = lines[-1]
-            prev_centers = [ (b[1] + b[3]) / 2 for b in prev_line ]
+            prev_centers = [(b[1] + b[3]) / 2 for b in prev_line]
             prev_center_y = float(np.mean(prev_centers))
             last_box = prev_line[-1]
             last_x1 = last_box[2]
@@ -688,8 +738,10 @@ class DocumentOCRPipeline:
         for ln in lines:
             ln.sort(key=lambda v: v[0])
         return [v for ln in lines for v in ln]
-    
-    def _sort_boxes_reading_order_with_resolutions(self, boxes: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+
+    def _sort_boxes_reading_order_with_resolutions(
+        self, boxes: List[Tuple[int, int, int, int]]
+    ) -> List[Tuple[int, int, int, int]]:
         """
         Сортирует боксы с учетом сжатых размеров для правильной сортировки, но возвращает
         оригинальные размеры боксов.

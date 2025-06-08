@@ -10,66 +10,51 @@ from thefittest.optimizers import DifferentialEvolution
 # Константы и параметры оптимизации
 # --------------------------------------
 PARAM_BOUNDS = {
-    'text_threshold': (0.1, 1.0),
-    'low_text': (0.0, 0.6),
-    'link_threshold': (0.0, 1.0),
-    'canvas_size': (256, 2560),
-    'mag_ratio': (0.5, 3.0),
-    'slope_ths': (0.0, 1.0),
-    'ycenter_ths': (0.0, 1.0),
-    'height_ths': (0.0, 1.0),
-    'width_ths': (0.0, 1.0),
-    'add_margin': (0.0, 0.5),
-    'contrast': (0.0, 0.5),
-    'sharpness': (0.0, 0.5),
-    'brightness': (0.0, 0.5),
-    'gamma': (0.8, 1.2),
+    "shrink_ratio": (0.3, 0.7),
+    "iou_threshold": (0.1, 0.3),
+    "score_thresh": (0.0, 1.0),
+    "target_size": (1024, 2048),
+    "contrast": (0.0, 0.5),
+    "sharpness": (0.0, 0.5),
+    "brightness": (0.0, 0.5),
+    "gamma": (0.8, 1.2),
+    "TTA_thresh": (0.0, 0.5),
 }
 
-BEST_DETECT_PARAMS = {
-    'text_threshold': 0.5213,
-    'low_text': 0.3616,
-    'link_threshold': 0.3211,
-    'canvas_size': 2560,
-    'mag_ratio': 2.4571,
-    'slope_ths': 0.4065,
-    'ycenter_ths': 0.0,
-    'height_ths': 0.7308,
-    'width_ths': 0.6589,
-    'add_margin': 0.0721
-}
-
-IMAGE_DIR = r"C:\\shared\\Archive_19_04\\combined_images"
+IMAGE_DIR = r"C:\data0205\Archives020525\test_images"
 ANNOTATIONS_CSV = r"C:\\shared\\Archive_19_04\\annotations_with_image_size_c.csv"
-CONFIG_PATH = 'config.yaml'
-OCR_MODEL_PATH = r"C:\\shared\\saved_models_25_04\\TPS-ResNet-BiLSTM-Attn-Seed1111\\best_norm_ED.pth"
-HISTORY_FILE = 'de_history.txt'
-BASELINE_FILE = 'baseline_stats.txt'
+CONFIG_PATH = "config.yaml"
+OCR_MODEL_PATH = (
+    r"C:\\shared\\saved_models_25_04\\TPS-ResNet-BiLSTM-Attn-Seed1111\\best_norm_ED.pth"
+)
+HISTORY_FILE = "de_history.txt"
+BASELINE_FILE = "baseline_stats.txt"
+
 
 # --------------------------------------
-# Инициализация пайплайна
+# Фабрика пайплайна
 # --------------------------------------
-
-def create_pipeline():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    pipeline = DocumentOCRPipeline(
+def create_pipeline(
+    detect_params, contrast, sharpness, brightness, gamma, TTA, TTA_thresh
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return DocumentOCRPipeline(
         config_path=CONFIG_PATH,
         ocr_model_path=OCR_MODEL_PATH,
         device=device,
-        detect_params=BEST_DETECT_PARAMS.copy(),
+        detect_params=detect_params,
+        contrast=contrast,
+        sharpness=sharpness,
+        brightness=brightness,
+        gamma=gamma,
+        TTA=TTA,
+        TTA_thresh=TTA_thresh,
     )
-    pipeline.contrast = 0.0
-    pipeline.sharpness = 0.0
-    pipeline.brightness = 0.0
-    pipeline.gamma = 1.0
-    return pipeline
 
-base_pipeline = create_pipeline()
 
 # --------------------------------------
-# Метрики
+# Метрики (без изменений)
 # --------------------------------------
-
 def compute_iou(boxA, boxB):
     xA, yA = max(boxA[0], boxB[0]), max(boxA[1], boxB[1])
     xB, yB = min(boxA[2], boxB[2]), min(boxA[3], boxB[3])
@@ -80,6 +65,7 @@ def compute_iou(boxA, boxB):
     areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
     areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
     return interArea / float(areaA + areaB - interArea)
+
 
 def compute_dice(boxA, boxB):
     xA, yA = max(boxA[0], boxB[0]), max(boxA[1], boxB[1])
@@ -92,6 +78,7 @@ def compute_dice(boxA, boxB):
     areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
     return 2 * interArea / float(areaA + areaB)
 
+
 def edit_distance(s1, s2):
     len1, len2 = len(s1), len(s2)
     dp = np.zeros((len1 + 1, len2 + 1), dtype=int)
@@ -99,41 +86,52 @@ def edit_distance(s1, s2):
     dp[0, :] = np.arange(len2 + 1)
     for i in range(1, len1 + 1):
         for j in range(1, len2 + 1):
-            cost = 0 if s1[i-1] == s2[j-1] else 1
-            dp[i, j] = min(dp[i-1, j] + 1, dp[i, j-1] + 1, dp[i-1, j-1] + cost)
+            cost = 0 if s1[i - 1] == s2[j - 1] else 1
+            dp[i, j] = min(dp[i - 1, j] + 1, dp[i, j - 1] + 1, dp[i - 1, j - 1] + cost)
     return dp[len1, len2]
 
-# --------------------------------------
-# Оценка OCR пайплайна
-# --------------------------------------
 
 def evaluate_pipeline(pipeline, image_dir, annotations_csv, file_list, iou_thresh=0.5):
     df_ann = pd.read_csv(annotations_csv)
     results = []
     for image_name in file_list:
         path = os.path.join(image_dir, image_name)
-        if not os.path.exists(path): continue
+        if not os.path.exists(path):
+            continue
         img = Image.open(path)
         page = pipeline(img)
-        preds = [((w.x1, w.y1, w.x2, w.y2), w.text)
-                 for blk in page.blocks for strn in blk.strings for w in strn.words]
-        ann = df_ann[df_ann['image_name'] == image_name]
-        if ann.empty: continue
-        iw, ih = ann['image_width'].iloc[0], ann['image_height'].iloc[0]
-        truths = [((row['x_center']*iw - row['box_width']*iw/2,
-                    row['y_center']*ih - row['box_height']*ih/2,
-                    row['x_center']*iw + row['box_width']*iw/2,
-                    row['y_center']*ih + row['box_height']*ih/2), str(row['decoding']))
-                  for _, row in ann.iterrows()]
-        
+        preds = [
+            ((w.x1, w.y1, w.x2, w.y2), w.text)
+            for blk in page.blocks
+            for strn in blk.strings
+            for w in strn.words
+        ]
+        ann = df_ann[df_ann["image_name"] == image_name]
+        if ann.empty:
+            continue
+        iw, ih = ann["image_width"].iloc[0], ann["image_height"].iloc[0]
+        truths = [
+            (
+                (
+                    row["x_center"] * iw - row["box_width"] * iw / 2,
+                    row["y_center"] * ih - row["box_height"] * ih / 2,
+                    row["x_center"] * iw + row["box_width"] * iw / 2,
+                    row["y_center"] * ih + row["box_height"] * ih / 2,
+                ),
+                str(row["decoding"]),
+            )
+            for _, row in ann.iterrows()
+        ]
+
         ious, dices, norm_eds = [], [], []
         correct, total = 0, 0
         used = set()
 
         for t_box, t_text in truths:
-            best_iou, best_idx, best_pt = 0.0, None, ''
+            best_iou, best_idx, best_pt = 0.0, None, ""
             for idx, (p_box, p_text) in enumerate(preds):
-                if idx in used: continue
+                if idx in used:
+                    continue
                 iou = compute_iou(t_box, p_box)
                 if iou > best_iou:
                     best_iou, best_idx, best_pt = iou, idx, p_text
@@ -142,65 +140,97 @@ def evaluate_pipeline(pipeline, image_dir, annotations_csv, file_list, iou_thres
                 used.add(best_idx)
                 dices.append(compute_dice(t_box, preds[best_idx][0]))
                 total += 1
-                correct += (best_pt == t_text)
-                norm_eds.append(1 - edit_distance(best_pt, t_text) / max(len(t_text), 1))
+                correct += best_pt == t_text
+                norm_eds.append(
+                    1 - edit_distance(best_pt, t_text) / max(len(t_text), 1)
+                )
             else:
                 dices.append(0.0)
                 norm_eds.append(0.0)
 
-        if not ious: continue
-        results.append({
-            'image': image_name,
-            'mean_iou': np.mean(ious),
-            'mean_dice': np.mean(dices),
-            'recog_accuracy': correct/total if total else 0.0,
-            'mean_norm_score': np.mean(norm_eds),
-            'num_true': len(truths),
-            'num_pred': len(preds),
-        })
+        if not ious:
+            continue
+        results.append(
+            {
+                "image": image_name,
+                "mean_iou": np.mean(ious),
+                "mean_dice": np.mean(dices),
+                "recog_accuracy": correct / total if total else 0.0,
+                "mean_norm_score": np.mean(norm_eds),
+                "num_true": len(truths),
+                "num_pred": len(preds),
+            }
+        )
 
     df = pd.DataFrame(results)
     if not df.empty:
-        df['total_score'] = df['mean_iou'] + df['recog_accuracy'] + df['mean_norm_score']
+        df["total_score"] = (
+            df["mean_iou"] + df["recog_accuracy"] + df["mean_norm_score"]
+        )
     return df
+
 
 # --------------------------------------
 # Целевая функция для оптимизации
 # --------------------------------------
-
 def objective(phenotype):
     params = dict(zip(PARAM_BOUNDS.keys(), phenotype))
 
-    detect_params = {k: int(v) if k == 'canvas_size' else v
-                     for k, v in params.items() if k not in ('contrast', 'sharpness', 'brightness', 'gamma')}
-    base_pipeline.detect_params = detect_params
-    base_pipeline.contrast = params['contrast']
-    base_pipeline.sharpness = params['sharpness']
-    base_pipeline.brightness = params['brightness']
-    base_pipeline.gamma = params['gamma']
+    detect_params = {
+        "shrink_ratio": params["shrink_ratio"],
+        "iou_threshold": params["iou_threshold"],
+        "score_thresh": params["score_thresh"],
+        "target_size": int(params["target_size"]),
+    }
 
-    files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith('.jpg')][::100]
-    df = evaluate_pipeline(base_pipeline, IMAGE_DIR, ANNOTATIONS_CSV, files)
-    score = df['total_score'].mean() if not df.empty else 0.0
+    pipeline = create_pipeline(
+        detect_params=detect_params,
+        contrast=params["contrast"],
+        sharpness=params["sharpness"],
+        brightness=params["brightness"],
+        gamma=params["gamma"],
+        TTA=True,
+        TTA_thresh=params["TTA_thresh"],
+    )
 
-    with open(HISTORY_FILE, 'a') as f:
+    files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(".jpg")][::100]
+    df = evaluate_pipeline(pipeline, IMAGE_DIR, ANNOTATIONS_CSV, files)
+    score = df["total_score"].mean() if not df.empty else 0.0
+
+    with open(HISTORY_FILE, "a") as f:
         f.write(f"Params: {params}, Score: {score:.4f}\n")
 
     return score
 
+
 # --------------------------------------
 # Главный запуск
 # --------------------------------------
+if __name__ == "__main__":
+    # baseline без TTA
+    baseline_params = {
+        "shrink_ratio": 0.6,
+        "iou_threshold": 0.2,
+        "score_thresh": 0.9,
+        "target_size": 1024,
+    }
+    baseline_pipeline = create_pipeline(
+        detect_params=baseline_params,
+        contrast=0.0,
+        sharpness=0.0,
+        brightness=0.0,
+        gamma=1.0,
+        TTA=False,
+        TTA_thresh=0.0,
+    )
 
-if __name__ == '__main__':
-    files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith('.jpg')][::100]
-    df_base = evaluate_pipeline(base_pipeline, IMAGE_DIR, ANNOTATIONS_CSV, files)
-    base_score = df_base['total_score'].mean() if not df_base.empty else 0.0
-
-    with open(BASELINE_FILE, 'w') as f:
+    files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(".jpg")][::100]
+    df_base = evaluate_pipeline(baseline_pipeline, IMAGE_DIR, ANNOTATIONS_CSV, files)
+    base_score = df_base["total_score"].mean() if not df_base.empty else 0.0
+    with open(BASELINE_FILE, "w") as f:
         f.write(f"Baseline total_score: {base_score:.4f}\n")
 
-    open(HISTORY_FILE, 'w').close()
+    open(HISTORY_FILE, "w").close()
 
     left = np.array([v[0] for v in PARAM_BOUNDS.values()])
     right = np.array([v[1] for v in PARAM_BOUNDS.values()])
@@ -215,13 +245,13 @@ if __name__ == '__main__':
         num_variables=num_vars,
         show_progress_each=1,
         minimization=False,
-        mutation='current_to_best_1',
+        mutation="current_to_best_1",
         F=0.5,
         CR=0.7,
-        keep_history=True
+        keep_history=True,
     )
     optimizer.fit()
 
     best = optimizer.get_fittest()
-    print('Лучшие параметры:', dict(zip(PARAM_BOUNDS.keys(), best['phenotype'])))
-    print('Лучший score:', best['fitness'])
+    print("Лучшие параметры:", dict(zip(PARAM_BOUNDS.keys(), best["phenotype"])))
+    print("Лучший score:", best["fitness"])

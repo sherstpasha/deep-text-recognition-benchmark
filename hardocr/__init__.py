@@ -76,8 +76,10 @@ class DocumentOCRPipeline:
         sharpness: float = 0.0,
         brightness: float = 0.0,
         gamma: float = 1.0,
+        TTA: bool = False,
+        TTA_thresh: float = 0.0,
     ):
-        # 1) определяем self.device
+        # 1) device selection
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -85,12 +87,12 @@ class DocumentOCRPipeline:
                 device if isinstance(device, torch.device) else torch.device(device)
             )
 
-        # 2) загружаем модель на self.device
+        # 2) load OCR model
         self.model, self.converter, self.opt = self._load_model(
             config_path, ocr_model_path
         )
 
-        # 3) инициализируем детектор EAST
+        # 3) initialize EAST detector
         east_cfg = detect_params or {}
         weights = east_cfg.pop("weights_path", None)
         self.detector = EASTInfer(
@@ -103,17 +105,37 @@ class DocumentOCRPipeline:
             iou_threshold=east_cfg.get("iou_threshold", 0.2),
         )
 
-        # 4) параметры колонок / строк
+        # 4) layout parameters
         self.max_splits = max_splits
         self.y_tol_ratio = y_tol_ratio
         self.x_gap_ratio = x_gap_ratio
         self.rotate_threshold = rotate_threshold
 
-        # 5) аугментация
+        # 5) augmentation parameters
         self.contrast = contrast
         self.sharpness = sharpness
         self.brightness = brightness
         self.gamma = gamma
+
+        # 6) Test-time augmentation (TTA)
+        self.TTA = TTA
+        self.TTA_thresh = TTA_thresh  # not used for now
+
+    def _infer_boxes(self, img_array: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        det_page = self.detector.infer(img_array)
+        h, w = img_array.shape[:2]
+        ts = self.detector.target_size
+        sx, sy = w / ts, h / ts
+        boxes = []
+        for block in det_page.blocks:
+            for word in block.words:
+                scaled = [(int(x * sx), int(y * sy)) for x, y in word.polygon]
+                x0 = min(x for x, y in scaled)
+                y0 = min(y for x, y in scaled)
+                x1 = max(x for x, y in scaled)
+                y1 = max(y for x, y in scaled)
+                boxes.append((x0, y0, x1, y1))
+        return boxes
 
     def _augment_crop(self, image: Image.Image) -> Image.Image:
         """
@@ -142,6 +164,44 @@ class DocumentOCRPipeline:
             image = image.point(lambda x: table[x])
 
         return image
+
+    def _iou(
+        self, b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]
+    ) -> float:
+        x0 = max(b1[0], b2[0])
+        y0 = max(b1[1], b2[1])
+        x1 = min(b1[2], b2[2])
+        y1 = min(b1[3], b2[3])
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        inter = (x1 - x0) * (y1 - y0)
+        area1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+        area2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+        return inter / float(area1 + area2 - inter)
+
+    def _merge_tta_boxes(
+        self,
+        boxes1: List[Tuple[int, int, int, int]],
+        boxes2: List[Tuple[int, int, int, int]],
+    ) -> List[Tuple[int, int, int, int]]:
+        """
+        Объединяет только те боксы из boxes1 и boxes2,
+        которые имеют IoU > TTA_thresh, а все непарные боксы отбрасываются.
+        Возвращает список объединённых прямоугольников (x0, y0, x1, y1).
+        """
+        thresh = self.TTA_thresh
+        merged = []
+        # для каждого бокса из первого набора ищем пару во втором
+        for b1 in boxes1:
+            for b2 in boxes2:
+                if self._iou(b1, b2) > thresh:
+                    x0 = min(b1[0], b2[0])
+                    y0 = min(b1[1], b2[1])
+                    x1 = max(b1[2], b2[2])
+                    y1 = max(b1[3], b2[3])
+                    merged.append((x0, y0, x1, y1))
+                    break  # переходим к следующему b1 после нахождения пары
+        return merged
 
     def _load_model(self, config_path: str, model_path: str):
         """
@@ -415,37 +475,30 @@ class DocumentOCRPipeline:
         return result.convert("RGB")
 
     def __call__(self, pil_img: Image.Image) -> PageResponse:
-        # 1) переводим в RGB и в numpy
         rgb_img = pil_img.convert("RGB")
         img_array = np.array(rgb_img)
 
-        # 2) detect → extract boxes → rescale
-        det_page = self.detector.infer(img_array)
-        h, w = img_array.shape[:2]
-        ts = self.detector.target_size
-        sx, sy = w / ts, h / ts
+        # normal boxes
+        normal_boxes = self._infer_boxes(img_array)
 
-        all_boxes: List[Tuple[int, int, int, int]] = []
-        for block in det_page.blocks:
-            for word in block.words:
-                # word.polygon: List[List[float]] 4 points
-                scaled = [(int(x * sx), int(y * sy)) for x, y in word.polygon]
-                x0 = min(x for x, y in scaled)
-                y0 = min(y for x, y in scaled)
-                x1 = max(x for x, y in scaled)
-                y1 = max(y for x, y in scaled)
-                all_boxes.append((x0, y0, x1, y1))
+        if self.TTA:
+            flipped = np.fliplr(img_array)
+            mirrored = self._infer_boxes(flipped)
+            h, w = img_array.shape[:2]
+            inverted = [(w - x1, y0, w - x0, y1) for x0, y0, x1, y1 in mirrored]
 
-        # 3) сегментация на колонки
-        columns = self._segment_columns(all_boxes)
+            # merge with NMS-like logic
+            all_boxes = self._merge_tta_boxes(normal_boxes, inverted)
+        else:
+            all_boxes = normal_boxes
 
-        # 4) основной цикл распознавания и сбор структуры
-        blocks: List[BlockResponse] = []
-        for b_idx, col in enumerate(columns):
+        # segment, recognize, build response
+        cols = self._segment_columns(all_boxes)
+        blocks = []
+        for b_idx, col in enumerate(cols):
             sorted_boxes = self._sort_boxes_reading_order_with_resolutions(col)
             lines = self._split_into_lines(sorted_boxes)
-
-            strings: List[StringResponse] = []
+            strings = []
             for s_idx, line_boxes in enumerate(lines):
                 words = [
                     self.recognize_word(rgb_img, box, word_idx)
@@ -465,7 +518,6 @@ class DocumentOCRPipeline:
                         y2=max(ys2),
                     )
                 )
-
             xs1 = [s.x1 for s in strings]
             ys1 = [s.y1 for s in strings]
             xs2 = [s.x2 for s in strings]
@@ -480,7 +532,6 @@ class DocumentOCRPipeline:
                     y2=max(ys2),
                 )
             )
-
         return PageResponse(blocks=blocks)
 
     def _split_into_lines(

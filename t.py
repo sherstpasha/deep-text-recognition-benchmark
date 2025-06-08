@@ -5,17 +5,14 @@ from PIL import Image
 # Вынесенные числовые параметры для reader.detect()
 # --------------------------------------
 DETECT_PARAMS = {
-    "text_threshold": 0.5213592572934042,
-    "low_text": 0.36159995700141034,
-    "link_threshold": 0.3211728225955032,
-    "canvas_size": 2560,
-    "mag_ratio": 2.457119400680926,
-    "slope_ths": 0.4065218089501456,
+    "shrink_ratio": 0.6,
     "ycenter_ths": 0.0,
-    "height_ths": 0.7308397742828456,
-    "width_ths": 0.6589587170590814,
-    "add_margin": 0.07212504180872058,
+    "iou_threshold": 0.2,
+    "score_thresh": 0.9,
+    "target_size": 1024,
+    "weights_path": r"C:\Users\pasha\OneDrive\Рабочий стол\best.pth",
 }
+
 
 # — пример использования —
 from PIL import Image
@@ -26,7 +23,9 @@ import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 config_path = "config.yaml"
 ocr_model_path = r"C:\Users\pasha\OneDrive\Рабочий стол\best_accuracy.pth"
-image_path = r"C:\data0205\Archives020525\test_images\3686.jpg"
+image_path = (
+    r"C:\Users\pasha\OneDrive\Рабочий стол\77686370-e02a-45ce-bb4d-1738030fad46.jpg"
+)
 
 # Создание пайплайна с вынесенными detect-параметрами
 pipeline = DocumentOCRPipeline(
@@ -34,6 +33,8 @@ pipeline = DocumentOCRPipeline(
     ocr_model_path=ocr_model_path,
     device=device,
     detect_params=DETECT_PARAMS,
+    TTA=True,
+    TTA_thresh=0.1,
 )
 
 # загрузка изображения

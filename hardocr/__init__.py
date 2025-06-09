@@ -76,8 +76,8 @@ class DocumentOCRPipeline:
         sharpness: float = 0.0,
         brightness: float = 0.0,
         gamma: float = 1.0,
-        TTA: bool = False,
-        TTA_thresh: float = 0.0,
+        TTA: bool = True,
+        TTA_thresh: float = 0.1,
     ):
         # 1) device selection
         if device is None:
@@ -165,9 +165,7 @@ class DocumentOCRPipeline:
 
         return image
 
-    def _iou(
-        self, b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]
-    ) -> float:
+    def _iou(self, b1: Tuple[int,int,int,int], b2: Tuple[int,int,int,int]) -> float:
         x0 = max(b1[0], b2[0])
         y0 = max(b1[1], b2[1])
         x1 = min(b1[2], b2[2])
@@ -185,22 +183,25 @@ class DocumentOCRPipeline:
         boxes2: List[Tuple[int, int, int, int]],
     ) -> List[Tuple[int, int, int, int]]:
         """
-        Объединяет только те боксы из boxes1 и boxes2,
-        которые имеют IoU > TTA_thresh, а все непарные боксы отбрасываются.
-        Возвращает список объединённых прямоугольников (x0, y0, x1, y1).
+        Объединяет боксы из boxes1 и boxes2, где IoU > TTA_thresh.
+        Для горизонтальной координаты (x0, x1) берутся экстремумы из обоих боксов,
+        а для вертикальной (y0, y1) используются значения из первого набора (boxes1),
+        чтобы сохранить высоту оригинального бокса.
+        Непарные боксы отбрасываются.
         """
         thresh = self.TTA_thresh
         merged = []
-        # для каждого бокса из первого набора ищем пару во втором
         for b1 in boxes1:
             for b2 in boxes2:
                 if self._iou(b1, b2) > thresh:
+                    # x-координаты: экстремумы из обоих боксов
                     x0 = min(b1[0], b2[0])
-                    y0 = min(b1[1], b2[1])
                     x1 = max(b1[2], b2[2])
-                    y1 = max(b1[3], b2[3])
+                    # y-координаты: берем из исходного бокса b1
+                    y0 = b1[1]
+                    y1 = b1[3]
                     merged.append((x0, y0, x1, y1))
-                    break  # переходим к следующему b1 после нахождения пары
+                    break
         return merged
 
     def _load_model(self, config_path: str, model_path: str):
@@ -512,10 +513,7 @@ class DocumentOCRPipeline:
                     StringResponse(
                         index=s_idx,
                         words=words,
-                        x1=min(xs1),
-                        y1=min(ys1),
-                        x2=max(xs2),
-                        y2=max(ys2),
+                        x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
                     )
                 )
             xs1 = [s.x1 for s in strings]
@@ -526,14 +524,11 @@ class DocumentOCRPipeline:
                 BlockResponse(
                     index=b_idx,
                     strings=strings,
-                    x1=min(xs1),
-                    y1=min(ys1),
-                    x2=max(xs2),
-                    y2=max(ys2),
+                    x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
                 )
             )
         return PageResponse(blocks=blocks)
-
+    
     def _split_into_lines(
         self, boxes: List[Tuple[int, int, int, int]]
     ) -> List[List[Tuple[int, int, int, int]]]:

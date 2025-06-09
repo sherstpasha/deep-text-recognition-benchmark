@@ -10,18 +10,18 @@ from thefittest.optimizers import DifferentialEvolution
 # Константы и параметры оптимизации
 # --------------------------------------
 PARAM_BOUNDS = {
-    "shrink_ratio": (0.3, 0.7),
-    "iou_threshold": (0.1, 0.3),
-    "score_thresh": (0.0, 1.0),
-    "target_size": (1024, 2048),
-    "contrast": (0.0, 0.5),
-    "sharpness": (0.0, 0.5),
-    "brightness": (0.0, 0.5),
-    "gamma": (0.8, 1.2),
-    "TTA_thresh": (0.0, 0.5),
+    "score_thresh": (0.95, 1.0),
+    "TTA_thresh":   (0.0,  0.15),
 }
 
-IMAGE_DIR = r"C:\data0205\Archives020525\test_images"
+# Фиксированные параметры детектора
+FIXED_DETECT_PARAMS = {
+    "shrink_ratio": 0.6,
+    "iou_threshold": 0.2,
+    "target_size":   1024,
+}
+
+IMAGE_DIR = r"C:\\shared\\Archive_19_04\\combined_images"
 ANNOTATIONS_CSV = r"C:\\shared\\Archive_19_04\\annotations_with_image_size_c.csv"
 CONFIG_PATH = "config.yaml"
 OCR_MODEL_PATH = (
@@ -34,23 +34,21 @@ BASELINE_FILE = "baseline_stats.txt"
 # --------------------------------------
 # Фабрика пайплайна
 # --------------------------------------
-def create_pipeline(
-    detect_params, contrast, sharpness, brightness, gamma, TTA, TTA_thresh
-):
+def create_pipeline(detect_params, TTA, TTA_thresh):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # остальные аугментации оставляем на 0/1
     return DocumentOCRPipeline(
         config_path=CONFIG_PATH,
         ocr_model_path=OCR_MODEL_PATH,
         device=device,
         detect_params=detect_params,
-        contrast=contrast,
-        sharpness=sharpness,
-        brightness=brightness,
-        gamma=gamma,
+        contrast=0.0,
+        sharpness=0.0,
+        brightness=0.0,
+        gamma=1.0,
         TTA=TTA,
         TTA_thresh=TTA_thresh,
     )
-
 
 # --------------------------------------
 # Метрики (без изменений)
@@ -174,23 +172,16 @@ def evaluate_pipeline(pipeline, image_dir, annotations_csv, file_list, iou_thres
 # Целевая функция для оптимизации
 # --------------------------------------
 def objective(phenotype):
-    params = dict(zip(PARAM_BOUNDS.keys(), phenotype))
+    # phenotype = [score_thresh_value, TTA_thresh_value]
+    score_thresh, TTA_thresh = phenotype
 
-    detect_params = {
-        "shrink_ratio": params["shrink_ratio"],
-        "iou_threshold": params["iou_threshold"],
-        "score_thresh": params["score_thresh"],
-        "target_size": int(params["target_size"]),
-    }
+    detect_params = FIXED_DETECT_PARAMS.copy()
+    detect_params["score_thresh"] = score_thresh
 
     pipeline = create_pipeline(
         detect_params=detect_params,
-        contrast=params["contrast"],
-        sharpness=params["sharpness"],
-        brightness=params["brightness"],
-        gamma=params["gamma"],
         TTA=True,
-        TTA_thresh=params["TTA_thresh"],
+        TTA_thresh=TTA_thresh,
     )
 
     files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(".jpg")][::100]
@@ -198,7 +189,7 @@ def objective(phenotype):
     score = df["total_score"].mean() if not df.empty else 0.0
 
     with open(HISTORY_FILE, "a") as f:
-        f.write(f"Params: {params}, Score: {score:.4f}\n")
+        f.write(f"score_thresh={score_thresh:.4f}, TTA_thresh={TTA_thresh:.4f}, score={score:.4f}\n")
 
     return score
 
@@ -207,34 +198,21 @@ def objective(phenotype):
 # Главный запуск
 # --------------------------------------
 if __name__ == "__main__":
-    # baseline без TTA
-    baseline_params = {
-        "shrink_ratio": 0.6,
-        "iou_threshold": 0.2,
-        "score_thresh": 0.9,
-        "target_size": 1024,
-    }
+    # baseline с фиксированными параметрами и TTA=0.1
     baseline_pipeline = create_pipeline(
-        detect_params=baseline_params,
-        contrast=0.0,
-        sharpness=0.0,
-        brightness=0.0,
-        gamma=1.0,
-        TTA=False,
-        TTA_thresh=0.0,
+        detect_params={**FIXED_DETECT_PARAMS, "score_thresh": 0.9},
+        TTA=True,
+        TTA_thresh=0.1,
     )
-
     files = [f for f in os.listdir(IMAGE_DIR) if f.lower().endswith(".jpg")][::100]
     df_base = evaluate_pipeline(baseline_pipeline, IMAGE_DIR, ANNOTATIONS_CSV, files)
     base_score = df_base["total_score"].mean() if not df_base.empty else 0.0
     with open(BASELINE_FILE, "w") as f:
         f.write(f"Baseline total_score: {base_score:.4f}\n")
-
     open(HISTORY_FILE, "w").close()
 
-    left = np.array([v[0] for v in PARAM_BOUNDS.values()])
-    right = np.array([v[1] for v in PARAM_BOUNDS.values()])
-    num_vars = len(PARAM_BOUNDS)
+    left  = np.array([b[0] for b in PARAM_BOUNDS.values()])
+    right = np.array([b[1] for b in PARAM_BOUNDS.values()])
 
     optimizer = DifferentialEvolution(
         fitness_function=lambda pop: np.array([objective(ind) for ind in pop]),
@@ -242,7 +220,7 @@ if __name__ == "__main__":
         pop_size=15,
         left_border=left,
         right_border=right,
-        num_variables=num_vars,
+        num_variables=len(PARAM_BOUNDS),
         show_progress_each=1,
         minimization=False,
         mutation="current_to_best_1",

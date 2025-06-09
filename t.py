@@ -10,7 +10,6 @@ DETECT_PARAMS = {
     "iou_threshold": 0.2,
     "score_thresh": 0.9,
     "target_size": 1024,
-    "weights_path": r"C:\Users\pasha\OneDrive\Рабочий стол\best.pth",
 }
 
 
@@ -22,9 +21,9 @@ import torch
 # настройка устройства, модели и конфига
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 config_path = "config.yaml"
-ocr_model_path = r"C:\Users\pasha\OneDrive\Рабочий стол\best_accuracy.pth"
+ocr_model_path = r"C:\shared\saved_models_25_04\TPS-ResNet-BiLSTM-Attn-Seed1111\best_norm_ED.pth"
 image_path = (
-    r"C:\Users\pasha\OneDrive\Рабочий стол\77686370-e02a-45ce-bb4d-1738030fad46.jpg"
+    r"C:\shared\data0205\Archives020525\test_images\15.jpg"
 )
 
 # Создание пайплайна с вынесенными detect-параметрами

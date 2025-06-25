@@ -16,6 +16,7 @@ import os
 from PIL import ImageEnhance
 from manuscript.detectors import EASTInfer
 
+from manuscript.detectors.east.lanms import locality_aware_nms
 
 class WordResponse(BaseModel):
     index: int
@@ -24,6 +25,7 @@ class WordResponse(BaseModel):
     y1: int
     x2: int
     y2: int
+    score: float
 
 
 class StringResponse(BaseModel):
@@ -78,6 +80,8 @@ class DocumentOCRPipeline:
         gamma: float = 1.0,
         TTA: bool = True,
         TTA_thresh: float = 0.1,
+        use_nms: bool = True,
+        nms_thresh: float = 0.25,
     ):
         # 1) device selection
         if device is None:
@@ -121,12 +125,15 @@ class DocumentOCRPipeline:
         self.TTA = TTA
         self.TTA_thresh = TTA_thresh  # not used for now
 
-    def _infer_boxes(self, img_array: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        self.use_nms = use_nms
+        self.nms_thresh = nms_thresh
+
+    def _infer_boxes(self, img_array: np.ndarray) -> List[Tuple[Tuple[int, int, int, int], float]]:
         det_page = self.detector.infer(img_array)
         h, w = img_array.shape[:2]
         ts = self.detector.target_size
         sx, sy = w / ts, h / ts
-        boxes = []
+        results: List[Tuple[Tuple[int,int,int,int], float]] = []
         for block in det_page.blocks:
             for word in block.words:
                 scaled = [(int(x * sx), int(y * sy)) for x, y in word.polygon]
@@ -134,8 +141,9 @@ class DocumentOCRPipeline:
                 y0 = min(y for x, y in scaled)
                 x1 = max(x for x, y in scaled)
                 y1 = max(y for x, y in scaled)
-                boxes.append((x0, y0, x1, y1))
-        return boxes
+                score = float(getattr(word, "score", 1.0))
+                results.append(((x0, y0, x1, y1), score))
+        return results
 
     def _augment_crop(self, image: Image.Image) -> Image.Image:
         """
@@ -179,28 +187,19 @@ class DocumentOCRPipeline:
 
     def _merge_tta_boxes(
         self,
-        boxes1: List[Tuple[int, int, int, int]],
-        boxes2: List[Tuple[int, int, int, int]],
-    ) -> List[Tuple[int, int, int, int]]:
-        """
-        Объединяет боксы из boxes1 и boxes2, где IoU > TTA_thresh.
-        Для горизонтальной координаты (x0, x1) берутся экстремумы из обоих боксов,
-        а для вертикальной (y0, y1) используются значения из первого набора (boxes1),
-        чтобы сохранить высоту оригинального бокса.
-        Непарные боксы отбрасываются.
-        """
-        thresh = self.TTA_thresh
+        boxes1: List[Tuple[Tuple[int, int, int, int], float]],
+        boxes2: List[Tuple[Tuple[int, int, int, int], float]],
+    ) -> List[Tuple[Tuple[int, int, int, int], float]]:
         merged = []
-        for b1 in boxes1:
-            for b2 in boxes2:
-                if self._iou(b1, b2) > thresh:
-                    # x-координаты: экстремумы из обоих боксов
+        for b1, s1 in boxes1:
+            for b2, s2 in boxes2:
+                if self._iou(b1, b2) > self.TTA_thresh:
                     x0 = min(b1[0], b2[0])
                     x1 = max(b1[2], b2[2])
-                    # y-координаты: берем из исходного бокса b1
                     y0 = b1[1]
                     y1 = b1[3]
-                    merged.append((x0, y0, x1, y1))
+                    avg_score = (s1 + s2) / 2
+                    merged.append(((x0, y0, x1, y1), avg_score))
                     break
         return merged
 
@@ -311,7 +310,7 @@ class DocumentOCRPipeline:
         return new_boxes
 
     def recognize_word(
-        self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int
+        self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int, score: float
     ) -> WordResponse:
         """
         Распознаёт один бокс:
@@ -335,7 +334,8 @@ class DocumentOCRPipeline:
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
 
-        return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1)
+        return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1, score=score)
+    
 
     def visualize(
         self,
@@ -344,11 +344,11 @@ class DocumentOCRPipeline:
         show_words: bool = True,
         show_blocks: bool = True,
         connect_strings: bool = True,
-        show_numbers: bool = True,  # Новый параметр для отображения номеров
+        show_numbers: bool = True,
         word_style: Dict[str, Any] = None,
         block_style: Dict[str, Any] = None,
         line_style: Dict[str, Any] = None,
-        number_style: Dict[str, Any] = None,  # Новый параметр для стиля номеров
+        number_style: Dict[str, Any] = None,
     ) -> Image.Image:
         """
         Рисует на копии входного изображения:
@@ -357,15 +357,15 @@ class DocumentOCRPipeline:
         - строки: соединительные линии между соседними словами по line_style
         - цифры порядковые для боксов (если show_numbers=True)
         """
-        # 1) стили по умолчанию
+        # Стили по умолчанию
         word_style = word_style or {
             "outline": (255, 0, 0, 255),
-            "fill": None,
+            "fill": (255, 0, 0, 80),  # Полупрозрачная красная заливка
             "width": 1,
         }
         block_style = block_style or {
             "outline": (0, 0, 255, 255),
-            "fill": None,
+            "fill": (0, 0, 255, 50),  # Полупрозрачная синяя заливка
             "width": 3,
         }
         line_style = line_style or {"fill": (0, 255, 0, 200), "width": 5}
@@ -373,40 +373,42 @@ class DocumentOCRPipeline:
             "fill": (0, 0, 0, 255),
             "font_size": 30,
             "bg_fill": (255, 255, 255, 128),
-        }  # Белый полупрозрачный фон
+        }
 
-        # 2) получаем структуру PageResponse
+        # Получаем структуру PageResponse
         page = self(pil_img)
 
-        # 3) подготовка холстов
+        # Подготовка холстов
         base = pil_img.convert("RGBA")
         overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
-        # 4) рисуем блоки
+        # Рисуем блоки
         if show_blocks:
             for block in page.blocks:
+                fill = block_style.get("fill")
+                if fill is not None:
+                    fill = (*fill[:3], fill[3]) if len(fill) == 4 else (*fill, 100)
                 draw.rectangle(
                     [block.x1, block.y1, block.x2, block.y2],
                     outline=block_style["outline"],
                     width=block_style["width"],
-                    fill=block_style.get("fill"),
+                    fill=fill,
                 )
 
-        # 5) рисуем слова
+        # Рисуем слова
         if show_words:
             for block in page.blocks:
                 for string in block.strings:
-                    words = sorted(
-                        string.words, key=lambda w: w.x1
-                    )  # Сортируем слова по x1
+                    words = sorted(string.words, key=lambda w: w.x1)
                     for i, word in enumerate(words):
-                        word.index = i + 1  # Присваиваем индекс каждому слову
-
-                        if word_style.get("fill"):
+                        word.index = i + 1
+                        fill = word_style.get("fill")
+                        if fill is not None:
+                            fill = (*fill[:3], fill[3]) if len(fill) == 4 else (*fill, 100)
                             draw.rectangle(
                                 [word.x1, word.y1, word.x2, word.y2],
-                                fill=word_style["fill"],
+                                fill=fill,
                                 outline=None,
                             )
                         if word_style.get("outline"):
@@ -417,14 +419,12 @@ class DocumentOCRPipeline:
                                 fill=None,
                             )
 
-        # 6) рисуем соединительные линии для строк
+        # Соединительные линии
         if connect_strings:
             for block in page.blocks:
                 for string in block.strings:
-                    # сортируем слова по x1
                     words = sorted(string.words, key=lambda w: w.x1)
                     for prev, curr in zip(words, words[1:]):
-                        # точки: (x2_prev, center_y_prev) → (x1_curr, center_y_curr)
                         y_prev = (prev.y1 + prev.y2) // 2
                         y_curr = (curr.y1 + curr.y2) // 2
                         draw.line(
@@ -433,24 +433,17 @@ class DocumentOCRPipeline:
                             width=line_style["width"],
                         )
 
-        # 7) рисуем порядковые номера боксов
+        # Порядковые номера
         if show_numbers:
             for block in page.blocks:
                 for string in block.strings:
                     for word in string.words:
-                        # Получаем текстовый номер
-                        text_number = str(word.index)  # Используем индекс слова
+                        text_number = str(word.index)
                         text_size = number_style.get("font_size", 30)
-
-                        # Находим центр бокса
                         text_x = (word.x1 + word.x2) / 2
                         text_y = (word.y1 + word.y2) / 2
-
-                        # Нарисовать фон (прямоугольник) с полупрозрачным белым цветом
-                        bg_width = text_size * len(
-                            text_number
-                        )  # Ширина фона зависит от длины текста
-                        bg_height = text_size  # Высота фона равна размеру шрифта
+                        bg_width = text_size * len(text_number)
+                        bg_height = text_size
                         draw.rectangle(
                             [
                                 text_x - bg_width / 2,
@@ -458,53 +451,85 @@ class DocumentOCRPipeline:
                                 text_x + bg_width / 2,
                                 text_y + bg_height / 2,
                             ],
-                            fill=number_style["bg_fill"],  # Полупрозрачный белый фон
+                            fill=number_style["bg_fill"],
                         )
-
-                        # Рисуем черный текст поверх фона
                         draw.text(
-                            (
-                                text_x - text_size / 2,
-                                text_y - text_size / 2,
-                            ),  # Центрируем текст
+                            (text_x - text_size / 2, text_y - text_size / 2),
                             text_number,
-                            fill=number_style["fill"],  # Черный цвет текста
+                            fill=number_style["fill"],
                         )
 
-        # 8) комбинируем и возвращаем
+        # Комбинируем и возвращаем результат
         result = Image.alpha_composite(base, overlay)
         return result.convert("RGB")
 
     def __call__(self, pil_img: Image.Image) -> PageResponse:
+        # Конвертация изображения и получение numpy-массива
         rgb_img = pil_img.convert("RGB")
         img_array = np.array(rgb_img)
 
-        # normal boxes
-        normal_boxes = self._infer_boxes(img_array)
+        # 1) Детекция боксов с оценками
+        boxes_with_scores = self._infer_boxes(img_array)
 
+        # 2) Тестовое аугментирование (TTA) и слияние боксов
         if self.TTA:
             flipped = np.fliplr(img_array)
             mirrored = self._infer_boxes(flipped)
             h, w = img_array.shape[:2]
-            inverted = [(w - x1, y0, w - x0, y1) for x0, y0, x1, y1 in mirrored]
-
-            # merge with NMS-like logic
-            all_boxes = self._merge_tta_boxes(normal_boxes, inverted)
+            # Восстановление координат для перевёрнутого изображения
+            mirrored_flipped = [(((w - x1, y0, w - x0, y1), score))
+                                for ((x0, y0, x1, y1), score) in mirrored]
+            all_boxes = self._merge_tta_boxes(boxes_with_scores, mirrored_flipped)
         else:
-            all_boxes = normal_boxes
+            all_boxes = boxes_with_scores
 
-        # segment, recognize, build response
-        cols = self._segment_columns(all_boxes)
-        blocks = []
+        # 3) Опциональное применение locality_aware_nms
+        if self.use_nms:
+            # Подготовка входных данных для lanms: каждая запись [x0,y0,x1,y0,x1,y1,x0,y1,score]
+            lanms_input = np.stack([
+                np.array([
+                    box[0], box[1],
+                    box[2], box[1],
+                    box[2], box[3],
+                    box[0], box[3],
+                    score
+                ], dtype=np.float32)
+                for (box, score) in all_boxes
+            ], axis=0)
+            if lanms_input.size:
+                lanms_out = locality_aware_nms(lanms_input, self.nms_thresh)
+            else:
+                lanms_out = np.empty((0, 9), dtype=np.float32)
+            # Конвертация результата обратно в список ((x0,y0,x1,y1), score)
+            processed_boxes: List[Tuple[Tuple[int, int, int, int], float]] = []
+            for row in lanms_out:
+                xs = row[[0,2,4,6]].astype(int)
+                ys = row[[1,3,5,7]].astype(int)
+                s = float(row[8])
+                x0n, y0n = int(xs.min()), int(ys.min())
+                x1n, y1n = int(xs.max()), int(ys.max())
+                processed_boxes.append(((x0n, y0n, x1n, y1n), s))
+        else:
+            processed_boxes = all_boxes
+
+        # 4) Разделение боксов и скор в отдельные коллекции
+        box_to_score = {tuple(box): score for box, score in processed_boxes}
+        only_boxes = [box for box, _ in processed_boxes]
+
+        # 5) Сегментация, распознавание и сборка ответа
+        cols = self._segment_columns(only_boxes)
+        blocks: List[BlockResponse] = []
         for b_idx, col in enumerate(cols):
             sorted_boxes = self._sort_boxes_reading_order_with_resolutions(col)
             lines = self._split_into_lines(sorted_boxes)
-            strings = []
+            strings: List[StringResponse] = []
             for s_idx, line_boxes in enumerate(lines):
-                words = [
-                    self.recognize_word(rgb_img, box, word_idx)
-                    for word_idx, box in enumerate(line_boxes)
-                ]
+                words: List[WordResponse] = []
+                for w_idx, box in enumerate(line_boxes):
+                    score = box_to_score.get(tuple(box), 1.0)
+                    words.append(
+                        self.recognize_word(rgb_img, box, w_idx, score)
+                    )
                 xs1 = [w.x1 for w in words]
                 ys1 = [w.y1 for w in words]
                 xs2 = [w.x2 for w in words]
@@ -528,6 +553,7 @@ class DocumentOCRPipeline:
                 )
             )
         return PageResponse(blocks=blocks)
+
     
     def _split_into_lines(
         self, boxes: List[Tuple[int, int, int, int]]

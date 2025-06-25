@@ -34,6 +34,7 @@ pipeline = DocumentOCRPipeline(
     detect_params=DETECT_PARAMS,
     TTA=True,
     TTA_thresh=0.1,
+    use_nms=True,
 )
 
 # загрузка изображения

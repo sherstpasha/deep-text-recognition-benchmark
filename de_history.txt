@@ -37,3 +37,4 @@ score_thresh=0.9535, TTA_thresh=0.0804, score=1.8188
 score_thresh=0.9500, TTA_thresh=0.1134, score=1.8218
 score_thresh=0.9518, TTA_thresh=0.1288, score=1.8193
 score_thresh=0.9665, TTA_thresh=0.0946, score=1.8102
+score_thresh=0.9540, TTA_thresh=0.1099, score=1.8179

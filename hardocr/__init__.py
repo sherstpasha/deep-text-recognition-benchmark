@@ -18,6 +18,7 @@ from manuscript.detectors import EASTInfer
 
 from manuscript.detectors.east.lanms import locality_aware_nms
 
+
 class WordResponse(BaseModel):
     index: int
     text: str
@@ -128,12 +129,14 @@ class DocumentOCRPipeline:
         self.use_nms = use_nms
         self.nms_thresh = nms_thresh
 
-    def _infer_boxes(self, img_array: np.ndarray) -> List[Tuple[Tuple[int, int, int, int], float]]:
+    def _infer_boxes(
+        self, img_array: np.ndarray
+    ) -> List[Tuple[Tuple[int, int, int, int], float]]:
         det_page = self.detector.infer(img_array)
         h, w = img_array.shape[:2]
         ts = self.detector.target_size
         sx, sy = w / ts, h / ts
-        results: List[Tuple[Tuple[int,int,int,int], float]] = []
+        results: List[Tuple[Tuple[int, int, int, int], float]] = []
         for block in det_page.blocks:
             for word in block.words:
                 scaled = [(int(x * sx), int(y * sy)) for x, y in word.polygon]
@@ -173,7 +176,9 @@ class DocumentOCRPipeline:
 
         return image
 
-    def _iou(self, b1: Tuple[int,int,int,int], b2: Tuple[int,int,int,int]) -> float:
+    def _iou(
+        self, b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]
+    ) -> float:
         x0 = max(b1[0], b2[0])
         y0 = max(b1[1], b2[1])
         x1 = min(b1[2], b2[2])
@@ -310,7 +315,11 @@ class DocumentOCRPipeline:
         return new_boxes
 
     def recognize_word(
-        self, pil_img: Image.Image, box: Tuple[int, int, int, int], word_idx: int, score: float
+        self,
+        pil_img: Image.Image,
+        box: Tuple[int, int, int, int],
+        word_idx: int,
+        score: float,
     ) -> WordResponse:
         """
         Распознаёт один бокс:
@@ -334,8 +343,9 @@ class DocumentOCRPipeline:
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
 
-        return WordResponse(index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1, score=score)
-    
+        return WordResponse(
+            index=word_idx, text=cleaned, x1=x0, y1=y0, x2=x1, y2=y1, score=score
+        )
 
     def visualize(
         self,
@@ -405,7 +415,9 @@ class DocumentOCRPipeline:
                         word.index = i + 1
                         fill = word_style.get("fill")
                         if fill is not None:
-                            fill = (*fill[:3], fill[3]) if len(fill) == 4 else (*fill, 100)
+                            fill = (
+                                (*fill[:3], fill[3]) if len(fill) == 4 else (*fill, 100)
+                            )
                             draw.rectangle(
                                 [word.x1, word.y1, word.x2, word.y2],
                                 fill=fill,
@@ -477,8 +489,10 @@ class DocumentOCRPipeline:
             mirrored = self._infer_boxes(flipped)
             h, w = img_array.shape[:2]
             # Восстановление координат для перевёрнутого изображения
-            mirrored_flipped = [(((w - x1, y0, w - x0, y1), score))
-                                for ((x0, y0, x1, y1), score) in mirrored]
+            mirrored_flipped = [
+                (((w - x1, y0, w - x0, y1), score))
+                for ((x0, y0, x1, y1), score) in mirrored
+            ]
             all_boxes = self._merge_tta_boxes(boxes_with_scores, mirrored_flipped)
         else:
             all_boxes = boxes_with_scores
@@ -486,16 +500,26 @@ class DocumentOCRPipeline:
         # 3) Опциональное применение locality_aware_nms
         if self.use_nms:
             # Подготовка входных данных для lanms: каждая запись [x0,y0,x1,y0,x1,y1,x0,y1,score]
-            lanms_input = np.stack([
-                np.array([
-                    box[0], box[1],
-                    box[2], box[1],
-                    box[2], box[3],
-                    box[0], box[3],
-                    score
-                ], dtype=np.float32)
-                for (box, score) in all_boxes
-            ], axis=0)
+            lanms_input = np.stack(
+                [
+                    np.array(
+                        [
+                            box[0],
+                            box[1],
+                            box[2],
+                            box[1],
+                            box[2],
+                            box[3],
+                            box[0],
+                            box[3],
+                            score,
+                        ],
+                        dtype=np.float32,
+                    )
+                    for (box, score) in all_boxes
+                ],
+                axis=0,
+            )
             if lanms_input.size:
                 lanms_out = locality_aware_nms(lanms_input, self.nms_thresh)
             else:
@@ -503,8 +527,8 @@ class DocumentOCRPipeline:
             # Конвертация результата обратно в список ((x0,y0,x1,y1), score)
             processed_boxes: List[Tuple[Tuple[int, int, int, int], float]] = []
             for row in lanms_out:
-                xs = row[[0,2,4,6]].astype(int)
-                ys = row[[1,3,5,7]].astype(int)
+                xs = row[[0, 2, 4, 6]].astype(int)
+                ys = row[[1, 3, 5, 7]].astype(int)
                 s = float(row[8])
                 x0n, y0n = int(xs.min()), int(ys.min())
                 x1n, y1n = int(xs.max()), int(ys.max())
@@ -527,9 +551,7 @@ class DocumentOCRPipeline:
                 words: List[WordResponse] = []
                 for w_idx, box in enumerate(line_boxes):
                     score = box_to_score.get(tuple(box), 1.0)
-                    words.append(
-                        self.recognize_word(rgb_img, box, w_idx, score)
-                    )
+                    words.append(self.recognize_word(rgb_img, box, w_idx, score))
                 xs1 = [w.x1 for w in words]
                 ys1 = [w.y1 for w in words]
                 xs2 = [w.x2 for w in words]
@@ -538,7 +560,10 @@ class DocumentOCRPipeline:
                     StringResponse(
                         index=s_idx,
                         words=words,
-                        x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
+                        x1=min(xs1),
+                        y1=min(ys1),
+                        x2=max(xs2),
+                        y2=max(ys2),
                     )
                 )
             xs1 = [s.x1 for s in strings]
@@ -549,12 +574,14 @@ class DocumentOCRPipeline:
                 BlockResponse(
                     index=b_idx,
                     strings=strings,
-                    x1=min(xs1), y1=min(ys1), x2=max(xs2), y2=max(ys2)
+                    x1=min(xs1),
+                    y1=min(ys1),
+                    x2=max(xs2),
+                    y2=max(ys2),
                 )
             )
         return PageResponse(blocks=blocks)
 
-    
     def _split_into_lines(
         self, boxes: List[Tuple[int, int, int, int]]
     ) -> List[List[Tuple[int, int, int, int]]]:
@@ -601,6 +628,40 @@ class DocumentOCRPipeline:
                 lines.append([box])
 
         return lines
+
+    def _recognize_batch_texts(self, images: List[Image.Image]) -> List[str]:
+        import torch
+
+        self.model.eval()
+
+        # Преобразуем изображения в тензоры
+        batch = torch.cat([self._preprocess(img) for img in images], dim=0).to(
+            self.device
+        )
+
+        batch_size = batch.size(0)
+        length_for_pred = torch.IntTensor([self.opt.batch_max_length] * batch_size).to(
+            self.device
+        )
+        text_for_pred = (
+            torch.LongTensor(batch_size, self.opt.batch_max_length + 1)
+            .fill_(0)
+            .to(self.device)
+        )
+
+        with torch.no_grad():
+            if "CTC" in self.opt.Prediction:
+                preds = self.model(batch, text_for_pred)
+                _, indices = preds.max(2)
+                preds_str = self.converter.decode(
+                    indices.data, torch.IntTensor([preds.size(1)] * batch_size)
+                )
+            else:
+                preds = self.model(batch, text_for_pred, is_train=False)
+                _, indices = preds.max(2)
+                preds_str = self.converter.decode(indices, length_for_pred)
+
+        return [self._clean_text(p) for p in preds_str]
 
     def _preprocess(self, image: Image.Image) -> torch.Tensor:
         """

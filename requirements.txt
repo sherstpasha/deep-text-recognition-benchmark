@@ -1,11 +1,10 @@
-numpy==1.24.4
-scikit-image==0.21.0
-manuscript-ocr==0.1.4
+numpy
+manuscript-ocr==0.1.6
 torch
 torchvision
 pandas
 opencv-python-headless
-Pillow
+pillow
 tqdm
 pyyaml
 natsort

@@ -19,7 +19,7 @@ pipeline = DocumentOCRPipeline(
     TTA=True,
     TTA_thresh=0.1,
     use_nms=True,
-    batch_size=1,
+    batch_size=8,
 )
 
 # загрузка изображения

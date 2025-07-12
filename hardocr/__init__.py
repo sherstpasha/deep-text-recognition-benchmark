@@ -1,21 +1,20 @@
-import re
+# Standard library
 import argparse
+import re
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+# Third-party
+import numpy as np
 import yaml
 import torch
-import warnings
-from typing import List, Tuple, Any, Dict, Union
-import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
+from pydantic import BaseModel
+from torchvision import transforms
+
+# Project modules
 from .model import Model
 from .utils import CTCLabelConverter, AttnLabelConverter
-from torchvision import transforms
-from pydantic import BaseModel
-from PIL import ImageDraw
-import cv2
-import os
-from PIL import ImageEnhance
 from manuscript.detectors import EASTInfer
-
 from manuscript.detectors.east.lanms import locality_aware_nms
 
 
@@ -75,15 +74,13 @@ class DocumentOCRPipeline:
         y_tol_ratio: float = 0.6,
         x_gap_ratio: float = np.inf,
         rotate_threshold: float = 1.5,
-        contrast: float = 0.0,
-        sharpness: float = 0.0,
-        brightness: float = 0.0,
-        gamma: float = 1.0,
         TTA: bool = True,
         TTA_thresh: float = 0.1,
         use_nms: bool = True,
         nms_thresh: float = 0.25,
+        batch_size: int = 1,
     ):
+        self.batch_size = batch_size
         # 1) device selection
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -116,18 +113,39 @@ class DocumentOCRPipeline:
         self.x_gap_ratio = x_gap_ratio
         self.rotate_threshold = rotate_threshold
 
-        # 5) augmentation parameters
-        self.contrast = contrast
-        self.sharpness = sharpness
-        self.brightness = brightness
-        self.gamma = gamma
-
         # 6) Test-time augmentation (TTA)
         self.TTA = TTA
-        self.TTA_thresh = TTA_thresh  # not used for now
+        self.TTA_thresh = TTA_thresh
 
         self.use_nms = use_nms
         self.nms_thresh = nms_thresh
+
+    def _recognize_crops_in_batches(self, crops: List[Image.Image]) -> List[str]:
+        """
+        If batch_size == 1, process all crops sequentially without batching.
+        If batch_size > 1, split into chunks and batch-process.
+        """
+        if self.batch_size <= 1:
+            # sequential processing
+            return [self._clean_text(self._recognize_text(crop)) for crop in crops]
+
+        # batch processing
+        total = len(crops)
+        texts: List[str] = []
+        for i in range(0, total, self.batch_size):
+            batch = crops[i : i + self.batch_size]
+            texts.extend(self._recognize_batch_texts(batch))
+        return texts
+
+    def _prepare_crop(
+        self, pil_img: Image.Image, box: Tuple[int, int, int, int]
+    ) -> Image.Image:
+        x0, y0, x1, y1 = box
+        crop = pil_img.crop((x0, y0, x1, y1))
+        width, height = crop.size
+        if height > width * self.rotate_threshold:
+            crop = crop.rotate(90, expand=True)
+        return crop
 
     def _infer_boxes(
         self, img_array: np.ndarray
@@ -147,34 +165,6 @@ class DocumentOCRPipeline:
                 score = float(getattr(word, "score", 1.0))
                 results.append(((x0, y0, x1, y1), score))
         return results
-
-    def _augment_crop(self, image: Image.Image) -> Image.Image:
-        """
-        Применяет предобработку к кропу на основе заданных параметров.
-        """
-        # Контраст
-        if self.contrast and self.contrast != 0.0:
-            enhancer = ImageEnhance.Contrast(image)
-            image = enhancer.enhance(1.0 + self.contrast)
-
-        # Резкость
-        if self.sharpness and self.sharpness != 0.0:
-            enhancer = ImageEnhance.Sharpness(image)
-            image = enhancer.enhance(1.0 + self.sharpness)
-
-        # Яркость
-        if self.brightness and self.brightness != 0.0:
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(1.0 + self.brightness)
-
-        # Гамма
-        if self.gamma and self.gamma != 1.0:
-            gamma_inv = 1.0 / self.gamma
-            table = [((i / 255.0) ** gamma_inv) * 255 for i in range(256)]
-            table = np.array(table).clip(0, 255).astype("uint8")
-            image = image.point(lambda x: table[x])
-
-        return image
 
     def _iou(
         self, b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]
@@ -339,7 +329,6 @@ class DocumentOCRPipeline:
                 90, expand=True
             )  # Поворачиваем на +90 градусов по часовой
 
-        crop = self._augment_crop(crop)
         raw = self._recognize_text(crop)
         cleaned = self._clean_text(raw)
 
@@ -476,19 +465,16 @@ class DocumentOCRPipeline:
         return result.convert("RGB")
 
     def __call__(self, pil_img: Image.Image) -> PageResponse:
-        # Конвертация изображения и получение numpy-массива
+        # 1) Преобразование и детекция
         rgb_img = pil_img.convert("RGB")
         img_array = np.array(rgb_img)
-
-        # 1) Детекция боксов с оценками
         boxes_with_scores = self._infer_boxes(img_array)
 
-        # 2) Тестовое аугментирование (TTA) и слияние боксов
+        # 2) TTA
         if self.TTA:
             flipped = np.fliplr(img_array)
             mirrored = self._infer_boxes(flipped)
             h, w = img_array.shape[:2]
-            # Восстановление координат для перевёрнутого изображения
             mirrored_flipped = [
                 (((w - x1, y0, w - x0, y1), score))
                 for ((x0, y0, x1, y1), score) in mirrored
@@ -497,26 +483,12 @@ class DocumentOCRPipeline:
         else:
             all_boxes = boxes_with_scores
 
-        # 3) Опциональное применение locality_aware_nms
+        # 3) NMS
         if self.use_nms:
-            # Подготовка входных данных для lanms: каждая запись [x0,y0,x1,y0,x1,y1,x0,y1,score]
             lanms_input = np.stack(
                 [
-                    np.array(
-                        [
-                            box[0],
-                            box[1],
-                            box[2],
-                            box[1],
-                            box[2],
-                            box[3],
-                            box[0],
-                            box[3],
-                            score,
-                        ],
-                        dtype=np.float32,
-                    )
-                    for (box, score) in all_boxes
+                    np.array([x0, y0, x1, y0, x1, y1, x0, y1, score], dtype=np.float32)
+                    for ((x0, y0, x1, y1), score) in all_boxes
                 ],
                 axis=0,
             )
@@ -524,34 +496,105 @@ class DocumentOCRPipeline:
                 lanms_out = locality_aware_nms(lanms_input, self.nms_thresh)
             else:
                 lanms_out = np.empty((0, 9), dtype=np.float32)
-            # Конвертация результата обратно в список ((x0,y0,x1,y1), score)
-            processed_boxes: List[Tuple[Tuple[int, int, int, int], float]] = []
+            processed = []
             for row in lanms_out:
-                xs = row[[0, 2, 4, 6]].astype(int)
-                ys = row[[1, 3, 5, 7]].astype(int)
-                s = float(row[8])
-                x0n, y0n = int(xs.min()), int(ys.min())
-                x1n, y1n = int(xs.max()), int(ys.max())
-                processed_boxes.append(((x0n, y0n, x1n, y1n), s))
+                xs, ys = row[[0, 2, 4, 6]].astype(int), row[[1, 3, 5, 7]].astype(int)
+                processed.append(
+                    (
+                        (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())),
+                        float(row[8]),
+                    )
+                )
         else:
-            processed_boxes = all_boxes
+            processed = all_boxes
 
-        # 4) Разделение боксов и скор в отдельные коллекции
-        box_to_score = {tuple(box): score for box, score in processed_boxes}
-        only_boxes = [box for box, _ in processed_boxes]
+        # 4) Словарь и простой список боксов
+        box_to_score = {tuple(b): s for b, s in processed}
+        only_boxes = [b for b, _ in processed]
 
-        # 5) Сегментация, распознавание и сборка ответа
+        # Если batch_size не указан — используем старую логику
+        if not self.batch_size:
+            blocks: List[BlockResponse] = []
+            cols = self._segment_columns(only_boxes)
+            for b_idx, col in enumerate(cols):
+                sorted_boxes = self._sort_boxes_reading_order_with_resolutions(col)
+                lines = self._split_into_lines(sorted_boxes)
+                strings: List[StringResponse] = []
+                for s_idx, line_boxes in enumerate(lines):
+                    words: List[WordResponse] = []
+                    for w_idx, box in enumerate(line_boxes):
+                        score = box_to_score.get(tuple(box), 1.0)
+                        words.append(self.recognize_word(rgb_img, box, w_idx, score))
+                    xs1 = [w.x1 for w in words]
+                    ys1 = [w.y1 for w in words]
+                    xs2 = [w.x2 for w in words]
+                    ys2 = [w.y2 for w in words]
+                    strings.append(
+                        StringResponse(
+                            index=s_idx,
+                            words=words,
+                            x1=min(xs1),
+                            y1=min(ys1),
+                            x2=max(xs2),
+                            y2=max(ys2),
+                        )
+                    )
+                xs1 = [s.x1 for s in strings]
+                ys1 = [s.y1 for s in strings]
+                xs2 = [s.x2 for s in strings]
+                ys2 = [s.y2 for s in strings]
+                blocks.append(
+                    BlockResponse(
+                        index=b_idx,
+                        strings=strings,
+                        x1=min(xs1),
+                        y1=min(ys1),
+                        x2=max(xs2),
+                        y2=max(ys2),
+                    )
+                )
+            return PageResponse(blocks=blocks)
+
+        # Иначе — batch_size задан, новая логика:
+        # 5) Разбиение на колонки->строки + сбор метаданных
         cols = self._segment_columns(only_boxes)
-        blocks: List[BlockResponse] = []
+        meta: List[Tuple[int, int, int, Tuple[int, int, int, int], float]] = []
         for b_idx, col in enumerate(cols):
             sorted_boxes = self._sort_boxes_reading_order_with_resolutions(col)
             lines = self._split_into_lines(sorted_boxes)
-            strings: List[StringResponse] = []
-            for s_idx, line_boxes in enumerate(lines):
-                words: List[WordResponse] = []
-                for w_idx, box in enumerate(line_boxes):
+            for s_idx, line in enumerate(lines):
+                for w_idx, box in enumerate(line):
                     score = box_to_score.get(tuple(box), 1.0)
-                    words.append(self.recognize_word(rgb_img, box, w_idx, score))
+                    meta.append((b_idx, s_idx, w_idx, box, score))
+
+        # 6) Батчевое распознавание всех кропов страницы
+        all_crops = [self._prepare_crop(rgb_img, box) for (_, _, _, box, _) in meta]
+        all_texts = self._recognize_crops_in_batches(all_crops)
+
+        # 7) Группируем тексты обратно по (block, string)
+        grouped: Dict[Tuple[int, int], List[WordResponse]] = {}
+        for (b_idx, s_idx, w_idx, box, score), text in zip(meta, all_texts):
+            wr = WordResponse(
+                index=w_idx,
+                text=text,
+                x1=box[0],
+                y1=box[1],
+                x2=box[2],
+                y2=box[3],
+                score=score,
+            )
+            grouped.setdefault((b_idx, s_idx), []).append(wr)
+
+        # 8) Собираем блоки и строки
+        blocks: List[BlockResponse] = []
+        for b_idx, col in enumerate(cols):
+            # сколько строк в блоке
+            s_max = max(s for (bb, s) in grouped.keys() if bb == b_idx)
+            strings: List[StringResponse] = []
+            for s_idx in range(s_max + 1):
+                words = sorted(grouped.get((b_idx, s_idx), []), key=lambda w: w.index)
+                if not words:
+                    continue
                 xs1 = [w.x1 for w in words]
                 ys1 = [w.y1 for w in words]
                 xs2 = [w.x2 for w in words]
@@ -566,6 +609,7 @@ class DocumentOCRPipeline:
                         y2=max(ys2),
                     )
                 )
+            # границы блока
             xs1 = [s.x1 for s in strings]
             ys1 = [s.y1 for s in strings]
             xs2 = [s.x2 for s in strings]
@@ -580,6 +624,7 @@ class DocumentOCRPipeline:
                     y2=max(ys2),
                 )
             )
+
         return PageResponse(blocks=blocks)
 
     def _split_into_lines(
@@ -630,7 +675,6 @@ class DocumentOCRPipeline:
         return lines
 
     def _recognize_batch_texts(self, images: List[Image.Image]) -> List[str]:
-        import torch
 
         self.model.eval()
 
@@ -704,18 +748,9 @@ class DocumentOCRPipeline:
                 raw = self.converter.decode(indices, torch.IntTensor([batch_size]))
         return raw[0]
 
-    def _remove_duplicates(self, word: str) -> str:
-        if len(word) <= 3:
-            return word
-        word = re.sub(r"(.)\1{1,}$", r"\1", word)
-        word = re.sub(r"(.{2})\1+$", r"\1", word)
-        word = re.sub(r"(.)\1{2,}", r"\1\1", word)
-        word = re.sub(r"(.{2})\1{1,}", r"\1", word)
-        return word
-
     def _clean_text(self, text: str) -> str:
         txt = re.sub(r"\[s\].*", "", text)
-        return " ".join([self._remove_duplicates(w) for w in txt.split()])
+        return " ".join([w for w in txt.split()])
 
     def _merge_boxes(
         self, h_boxes: List[Any], f_boxes: List[Any]

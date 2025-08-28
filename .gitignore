@@ -7,7 +7,6 @@
 *.tar
 *.sh
 *.txt
-*.ipynb
 *.zip
 *.eps
 *.pdf

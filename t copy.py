@@ -8,8 +8,8 @@ from hardocr import DocumentOCRPipeline
 # настройка устройства, модели и конфига
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 config_path = "config.yaml"
-ocr_model_path = r"C:\Users\pasha\OneDrive\Рабочий стол\best_accuracy.pth"
-image_path = r"C:\output\1410.jpg"
+ocr_model_path = r"best_accuracy.pth"
+image_path = r"C:\Users\USER\Desktop\images\7_105.JPG"
 
 # Создание пайплайна
 pipeline = DocumentOCRPipeline(

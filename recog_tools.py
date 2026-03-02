@@ -10,6 +10,8 @@ from tools import (
     clean_recognized_text,
 )
 import os
+import tempfile
+import uuid
 import yaml
 import torch
 import argparse
@@ -21,6 +23,25 @@ import cv2
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _save_final_boxes_debug_image(image, final_boxes, output_path=None):
+    vis = image.copy()
+    for line in final_boxes:
+        for poly in line:
+            pts = np.array(poly, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(vis, [pts], isClosed=True, color=(0, 0, 255), thickness=2)
+
+    if output_path is None:
+        output_path = os.path.join(
+            tempfile.gettempdir(),
+            f"final_boxes_{uuid.uuid4().hex[:10]}.jpg",
+        )
+
+    ok = cv2.imwrite(output_path, vis)
+    if not ok:
+        raise RuntimeError(f"Failed to save final_boxes debug image: {output_path}")
+    return output_path
 
 
 def detect_image_craft(image, gpu=False):
@@ -148,7 +169,9 @@ def recognize_text_from_images(image_pieces, model_dict):
     return recognized_texts
 
 
-def extract_text_from_image(image_or_path, recognize_model):
+def extract_text_from_image(
+    image_or_path, recognize_model, save_debug_boxes=True, debug_boxes_path=None
+):
 
     gpu = torch.cuda.is_available()
 
@@ -166,6 +189,12 @@ def extract_text_from_image(image_or_path, recognize_model):
 
     final_boxes = detect_image_craft(image, gpu=gpu)
     print(final_boxes)
+    if save_debug_boxes:
+        saved_debug_path = _save_final_boxes_debug_image(
+            image=image, final_boxes=final_boxes, output_path=debug_boxes_path
+        )
+        print(f"[DEBUG] final_boxes image: {saved_debug_path}")
+
     line_boxes = merge_boxes_by_lines(final_boxes)
 
     cropped_images_grouped = crop_boxes(np.array(image), final_boxes)
